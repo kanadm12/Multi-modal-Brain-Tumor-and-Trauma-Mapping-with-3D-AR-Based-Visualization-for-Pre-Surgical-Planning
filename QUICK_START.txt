@@ -1,0 +1,81 @@
+# ⚡ QUICK REFERENCE - Start Training in 2 Minutes
+
+## 1️⃣ ONE-TIME SETUP
+```bash
+pip install torch torchvision torchaudio nibabel scipy scikit-learn pandas tensorboard tqdm
+```
+
+## 2️⃣ CONFIGURE DATA PATH
+Open `optimized_brats_final.py` and find line ~70:
+```python
+DATA_DIR = r"C:\Users\Kanad\Desktop\BR_PROJECT\BEPROJECT-RUNPOD-DATA\dataset"
+```
+
+## 3️⃣ RUN TRAINING
+```bash
+python optimized_brats_final.py
+```
+
+## 4️⃣ MONITOR (in another terminal)
+```bash
+tensorboard --logdir=tensorboard_optimized_3fold
+```
+
+---
+
+## 📊 EXPECTED RESULTS
+- **Dice**: 92-95% ✅
+- **Time**: 5-7 days (A100 40GB)
+- **Models**: 3 folds saved
+
+---
+
+## 🔧 QUICK CONFIGS
+
+### For RTX 3090/4090 (24GB)
+```python
+# Add to script:
+from config import Config
+Config.preset_memory_efficient()
+```
+
+### For A100 80GB+
+```python
+# Add to script:
+from config import Config
+Config.preset_highperformance()
+```
+
+---
+
+## 📁 OUTPUT LOCATIONS
+| File | Location |
+|------|----------|
+| Logs | `outputs_optimized_3fold/training.log` |
+| Results | `outputs_optimized_3fold/cv_summary.json` |
+| Models | `models_optimized_3fold/fold_*_best.pth` |
+| TensorBoard | `tensorboard_optimized_3fold/` |
+
+---
+
+## ⚠️ IF OUT OF MEMORY
+```python
+BATCH_SIZE = 1              # Line ~116
+ACCUMULATION_STEPS = 16     # Line ~117
+```
+
+---
+
+## ✅ KEY OPTIMIZATIONS
+- ✅ 3-fold CV (vs 5-fold)
+- ✅ Larger input: 160×192×160
+- ✅ Bigger model: 48→768 filters
+- ✅ Larger batch: BS=16 (effective)
+- ✅ Transformer bottleneck
+- ✅ 8-point TTA
+- ✅ Combined loss function
+- ✅ Adaptive post-processing
+
+---
+
+**That's it! Happy training! 🚀**
