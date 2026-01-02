@@ -90,6 +90,18 @@ class Config:
         print("✅ Memory Efficient Preset Applied")
     
     @staticmethod
+    def preset_4xRTX4090():
+        """Optimized configuration for 4x RTX 4090 (96GB total)"""
+        Config.CROP_SIZE = (176, 192, 176)
+        Config.MODEL_FILTERS = [48, 96, 192, 384, 768]
+        Config.BATCH_SIZE = 2  # Per GPU = 8 total
+        Config.ACCUMULATION_STEPS = 4  # Effective BS = 32
+        Config.TRANSFORMER_DEPTH = 2
+        Config.EPOCHS = 400
+        Config.PATIENCE = 60
+        print("✅ 4x RTX 4090 Preset Applied (Multi-GPU)")
+    
+    @staticmethod
     def preset_quick_test():
         """Quick test configuration for debugging"""
         Config.CROP_SIZE = (96, 96, 96)
