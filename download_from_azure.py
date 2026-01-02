@@ -118,7 +118,7 @@ class AzureDatasetDownloader:
             pbar: Optional tqdm progress bar to update
         
         Returns:
-            Tuple of (file_count, total_bytes)
+            Tuple of (file_count, total_bytes, skipped_count)
         """
         from tqdm import tqdm
         
@@ -128,9 +128,31 @@ class AzureDatasetDownloader:
         
         file_count = 0
         total_bytes = 0
+        skipped_count = 0
+        downloaded_count = 0
         
         # Get list of blobs first
         blob_list = list(self.container_client.list_blobs(name_starts_with=blob_prefix))
+        
+        # Quick check: if all files exist with correct size, skip entire folder
+        all_files_exist = True
+        for blob in blob_list:
+            relative_path = blob.name[len(blob_prefix):]
+            local_file = patient_dir / relative_path
+            if not local_file.exists() or local_file.stat().st_size != blob.size:
+                all_files_exist = False
+                break
+        
+        if all_files_exist and len(blob_list) > 0:
+            # All files already downloaded - skip entire folder
+            for blob in blob_list:
+                file_count += 1
+                total_bytes += blob.size
+                skipped_count += 1
+            
+            if pbar:
+                pbar.set_postfix_str(f"✓ Skipped {patient_name} (complete)")
+            return file_count, total_bytes, skipped_count
         
         # Create progress bar for files within this patient folder
         file_pbar = tqdm(
@@ -151,8 +173,8 @@ class AzureDatasetDownloader:
                 if local_file.exists() and local_file.stat().st_size == blob.size:
                     file_count += 1
                     total_bytes += blob.size
-                    if pbar:
-                        pbar.set_postfix_str(f"{patient_name} (cached)")
+                    skipped_count += 1
+                    file_pbar.set_postfix_str(f"✓ Skipped (exists)")
                     continue
                 
                 # Create subdirectories if needed
@@ -168,9 +190,10 @@ class AzureDatasetDownloader:
                 
                 file_count += 1
                 total_bytes += len(data)
+                downloaded_count += 1
                 
                 # Update progress bar postfix with current file
-                file_pbar.set_postfix_str(f"{len(data) / (1024**2):.1f} MB")
+                file_pbar.set_postfix_str(f"⬇ {len(data) / (1024**2):.1f} MB")
                 
             except Exception as e:
                 logger.error(f"  Failed to download {blob.name}: {e}")
@@ -179,9 +202,12 @@ class AzureDatasetDownloader:
         file_pbar.close()
         
         if pbar:
-            pbar.set_postfix_str(f"Last: {patient_name} ({total_bytes / (1024**2):.0f} MB)")
+            if downloaded_count > 0:
+                pbar.set_postfix_str(f"⬇ {patient_name} ({downloaded_count} new, {skipped_count} skip)")
+            else:
+                pbar.set_postfix_str(f"✓ {patient_name} (all cached)")
         
-        return file_count, total_bytes
+        return file_count, total_bytes, skipped_count
     
     def download_all(self, max_patients: Optional[int] = None):
         """
@@ -209,6 +235,8 @@ class AzureDatasetDownloader:
         # Download each patient with progress bar
         total_files = 0
         total_bytes = 0
+        total_skipped = 0
+        total_downloaded = 0
         success_count = 0
         
         # Create main progress bar for patients
@@ -222,15 +250,17 @@ class AzureDatasetDownloader:
         
         for patient_name in pbar:
             try:
-                file_count, byte_count = self.download_patient_folder(patient_name, pbar)
+                file_count, byte_count, skipped_count = self.download_patient_folder(patient_name, pbar)
                 
                 total_files += file_count
                 total_bytes += byte_count
+                total_skipped += skipped_count
+                total_downloaded += (file_count - skipped_count)
                 success_count += 1
                 
                 # Update progress bar with statistics
                 pbar.set_postfix({
-                    'Files': total_files,
+                    'Files': f'{total_files} ({total_downloaded}⬇/{total_skipped}✓)',
                     'Size': f'{total_bytes / (1024**3):.1f}GB',
                     'Avg': f'{total_bytes / success_count / (1024**2):.0f}MB/pt'
                 })
@@ -248,11 +278,13 @@ class AzureDatasetDownloader:
         logger.info("\n" + "="*70)
         logger.info("DOWNLOAD COMPLETE")
         logger.info("="*70)
-        logger.info(f"Successfully downloaded: {success_count}/{len(patient_folders)} patients")
-        logger.info(f"Total files: {total_files}")
+        logger.info(f"Successfully processed: {success_count}/{len(patient_folders)} patients")
+        logger.info(f"Total files: {total_files} ({total_downloaded} downloaded, {total_skipped} skipped)")
         logger.info(f"Total size: {total_bytes / (1024**3):.2f} GB")
         logger.info(f"Time elapsed: {elapsed_time}")
         logger.info(f"Average speed: {total_bytes / (1024**2) / elapsed_time.total_seconds():.2f} MB/s")
+        if total_skipped > 0:
+            logger.info(f"⚡ Resume detected: {total_skipped} files were already downloaded")
         logger.info(f"Output directory: {self.output_dir.absolute()}")
         logger.info("="*70)
         
