@@ -4,6 +4,17 @@ Download BraTS dataset from Azure Blob Storage.
 This script downloads the complete BraTS dataset from Azure to local storage.
 Useful for RunPod or other cloud GPU instances.
 
+Setup:
+    1. Set the AZURE_STORAGE_CONNECTION_STRING environment variable:
+       
+       Linux/Mac:
+         export AZURE_STORAGE_CONNECTION_STRING='your_connection_string'
+       
+       Windows (PowerShell):
+         $env:AZURE_STORAGE_CONNECTION_STRING='your_connection_string'
+       
+       Or create a .env file (see .env.example)
+
 Usage:
     python download_from_azure.py [--output-dir ./dataset]
 """
@@ -27,11 +38,10 @@ logger = logging.getLogger(__name__)
 class AzureDatasetDownloader:
     """Download BraTS dataset from Azure Blob Storage."""
     
-    # Azure credentials
-    BLOB_CONNECTION_STRING: str = (
-        "DefaultEndpointsProtocol=https;AccountName=spartis9488473038;"
-        "AccountKey=WxiLwTEm+WEut0AIFRTLiWcXgHhDixXtYtF5gbbGIKLMWANt5wHOVwg/"
-        "QzRgz2uG1CHcazDil58i+ASttN+yaA==;EndpointSuffix=core.windows.net"
+    # Azure credentials - loaded from environment variables
+    BLOB_CONNECTION_STRING: str = os.getenv(
+        'AZURE_STORAGE_CONNECTION_STRING',
+        ''  # Empty default - will be validated in __init__
     )
     CONTAINER_NAME: str = "beproject"
     BLOB_PREFIX: str = "dataset/dataset/"
@@ -43,6 +53,19 @@ class AzureDatasetDownloader:
         Args:
             output_dir: Local directory to save dataset
         """
+        # Validate connection string
+        if not self.BLOB_CONNECTION_STRING:
+            raise ValueError(
+                "Azure Storage connection string not found!\n"
+                "Please set the AZURE_STORAGE_CONNECTION_STRING environment variable.\n\n"
+                "On Linux/Mac:\n"
+                "  export AZURE_STORAGE_CONNECTION_STRING='your_connection_string'\n\n"
+                "On Windows (PowerShell):\n"
+                "  $env:AZURE_STORAGE_CONNECTION_STRING='your_connection_string'\n\n"
+                "Or create a .env file with:\n"
+                "  AZURE_STORAGE_CONNECTION_STRING=your_connection_string"
+            )
+        
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
