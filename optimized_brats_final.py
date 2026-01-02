@@ -879,9 +879,17 @@ class BraTSDataset3D(Dataset):
             if not seg_file:
                 seg_file = glob.glob(os.path.join(patient_dir, "*seg.nii"))
             
-            if seg_file:
-                seg = nib.load(seg_file[0]).get_fdata().astype(np.uint8)
+            # Check file is not empty
+            if seg_file and os.path.getsize(seg_file[0]) > 1024:
+                try:
+                    seg = nib.load(seg_file[0]).get_fdata().astype(np.uint8)
+                except Exception as e:
+                    logger.warning(f"Failed to load segmentation for {patient_id}: {e}")
+                    seg = np.zeros(img[0].shape, dtype=np.uint8)
             else:
+                if seg_file:
+                    logger.warning(f"Empty segmentation file for {patient_id}, skipping patient")
+                    return None, None, patient_id
                 seg = np.zeros(img[0].shape, dtype=np.uint8)
                 logger.warning(f"Missing segmentation for {patient_id}")
             
@@ -892,9 +900,15 @@ class BraTSDataset3D(Dataset):
             seg_new[seg == 4] = 3
             seg = seg_new
             
-            # Crop/pad
+            # Crop/pad to ensure consistent dimensions
             img = np.stack([center_crop_or_pad(img[i], self.crop_size) for i in range(img.shape[0])])
             seg = center_crop_or_pad(seg, self.crop_size)
+            
+            # Final validation: ensure output shape is exactly as expected
+            expected_shape = (4,) + self.crop_size
+            if img.shape != expected_shape:
+                logger.error(f"Shape mismatch for {patient_id}: got {img.shape}, expected {expected_shape}")
+                return None, None, patient_id
             
             # Augmentation
             if self.split == 'train':
