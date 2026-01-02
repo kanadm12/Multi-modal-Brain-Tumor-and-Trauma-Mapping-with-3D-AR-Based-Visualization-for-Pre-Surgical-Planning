@@ -121,7 +121,7 @@ class WarmupScheduler:
 # ============================================================================
 
 # Paths - Update these to match your environment
-WORKSPACE_DIR = r"C:\Users\Kanad\Desktop\BR_PROJECT\BEPROJECT-RUNPOD-DATA"
+WORKSPACE_DIR = "/workspace/Multi-modal-Brain-Tumor-and-Trauma-Mapping-with-3D-AR-Based-Visualization-for-Pre-Surgical-Planning"
 DATA_DIR = os.path.join(WORKSPACE_DIR, "dataset")  # Adjust based on your data location
 OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs_optimized_3fold")
 MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "models_optimized_3fold")
