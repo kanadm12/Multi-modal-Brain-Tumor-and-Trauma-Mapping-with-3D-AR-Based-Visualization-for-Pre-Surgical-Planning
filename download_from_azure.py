@@ -51,17 +51,23 @@ class AzureDatasetDownloader:
     
     def _install_dependencies(self):
         """Install required Azure package if not present."""
-        try:
-            import azure.storage.blob
-            logger.info("✓ azure-storage-blob is already installed")
-        except ImportError:
-            logger.info("Installing azure-storage-blob...")
-            import subprocess
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", 
-                "azure-storage-blob", "-q"
-            ])
-            logger.info("✓ azure-storage-blob installed successfully")
+        required_packages = {
+            'azure.storage.blob': 'azure-storage-blob',
+            'tqdm': 'tqdm'
+        }
+        
+        for import_name, pip_name in required_packages.items():
+            try:
+                __import__(import_name)
+                logger.info(f"✓ {pip_name} is already installed")
+            except ImportError:
+                logger.info(f"Installing {pip_name}...")
+                import subprocess
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", 
+                    pip_name, "-q"
+                ])
+                logger.info(f"✓ {pip_name} installed successfully")
     
     def _setup_azure_client(self):
         """Initialize Azure Blob Storage client."""
@@ -103,17 +109,18 @@ class AzureDatasetDownloader:
         
         return patient_folders
     
-    def download_patient_folder(self, patient_name: str) -> tuple:
+    def download_patient_folder(self, patient_name: str, pbar: Optional[object] = None) -> tuple:
         """
         Download a single patient folder.
         
         Args:
             patient_name: Name of patient folder (e.g., 'BraTS_001')
+            pbar: Optional tqdm progress bar to update
         
         Returns:
             Tuple of (file_count, total_bytes)
         """
-        logger.info(f"Downloading: {patient_name}")
+        from tqdm import tqdm
         
         blob_prefix = f"{self.BLOB_PREFIX}{patient_name}/"
         patient_dir = self.output_dir / patient_name
@@ -122,13 +129,31 @@ class AzureDatasetDownloader:
         file_count = 0
         total_bytes = 0
         
-        blob_list = self.container_client.list_blobs(name_starts_with=blob_prefix)
+        # Get list of blobs first
+        blob_list = list(self.container_client.list_blobs(name_starts_with=blob_prefix))
         
-        for blob in blob_list:
+        # Create progress bar for files within this patient folder
+        file_pbar = tqdm(
+            blob_list,
+            desc=f"  Files for {patient_name}",
+            unit="file",
+            leave=False,
+            disable=len(blob_list) < 3  # Only show for folders with 3+ files
+        )
+        
+        for blob in file_pbar:
             try:
                 # Get relative path within patient folder
                 relative_path = blob.name[len(blob_prefix):]
                 local_file = patient_dir / relative_path
+                
+                # Skip if file already exists and has same size
+                if local_file.exists() and local_file.stat().st_size == blob.size:
+                    file_count += 1
+                    total_bytes += blob.size
+                    if pbar:
+                        pbar.set_postfix_str(f"{patient_name} (cached)")
+                    continue
                 
                 # Create subdirectories if needed
                 local_file.parent.mkdir(parents=True, exist_ok=True)
@@ -144,13 +169,17 @@ class AzureDatasetDownloader:
                 file_count += 1
                 total_bytes += len(data)
                 
-                # Log progress for larger files
-                if len(data) > 10 * 1024 * 1024:  # > 10MB
-                    logger.info(f"  Downloaded: {relative_path} ({len(data) / (1024**2):.1f} MB)")
+                # Update progress bar postfix with current file
+                file_pbar.set_postfix_str(f"{len(data) / (1024**2):.1f} MB")
                 
             except Exception as e:
                 logger.error(f"  Failed to download {blob.name}: {e}")
                 continue
+        
+        file_pbar.close()
+        
+        if pbar:
+            pbar.set_postfix_str(f"Last: {patient_name} ({total_bytes / (1024**2):.0f} MB)")
         
         return file_count, total_bytes
     
@@ -161,6 +190,8 @@ class AzureDatasetDownloader:
         Args:
             max_patients: Optional limit on number of patients to download
         """
+        from tqdm import tqdm
+        
         start_time = datetime.now()
         
         logger.info("="*70)
@@ -175,39 +206,41 @@ class AzureDatasetDownloader:
             patient_folders = patient_folders[:max_patients]
             logger.info(f"Limiting to first {max_patients} patients")
         
-        # Download each patient
+        # Download each patient with progress bar
         total_files = 0
         total_bytes = 0
         success_count = 0
         
-        for i, patient_name in enumerate(patient_folders, 1):
+        # Create main progress bar for patients
+        pbar = tqdm(
+            patient_folders,
+            desc="Downloading patients",
+            unit="patient",
+            colour="green",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}"
+        )
+        
+        for patient_name in pbar:
             try:
-                logger.info(f"\n[{i}/{len(patient_folders)}] Processing: {patient_name}")
-                
-                file_count, byte_count = self.download_patient_folder(patient_name)
+                file_count, byte_count = self.download_patient_folder(patient_name, pbar)
                 
                 total_files += file_count
                 total_bytes += byte_count
                 success_count += 1
                 
-                logger.info(
-                    f"  ✓ Downloaded {file_count} files "
-                    f"({byte_count / (1024**2):.1f} MB)"
-                )
-                
-                # Progress summary every 10 patients
-                if i % 10 == 0:
-                    elapsed = (datetime.now() - start_time).total_seconds()
-                    rate = i / elapsed * 3600  # patients per hour
-                    logger.info(
-                        f"\nProgress: {i}/{len(patient_folders)} patients | "
-                        f"{total_bytes / (1024**3):.2f} GB downloaded | "
-                        f"Rate: {rate:.1f} patients/hour"
-                    )
+                # Update progress bar with statistics
+                pbar.set_postfix({
+                    'Files': total_files,
+                    'Size': f'{total_bytes / (1024**3):.1f}GB',
+                    'Avg': f'{total_bytes / success_count / (1024**2):.0f}MB/pt'
+                })
                 
             except Exception as e:
                 logger.error(f"Failed to download {patient_name}: {e}")
+                pbar.set_postfix_str(f"ERROR: {patient_name}")
                 continue
+        
+        pbar.close()
         
         # Final summary
         elapsed_time = datetime.now() - start_time
@@ -219,6 +252,7 @@ class AzureDatasetDownloader:
         logger.info(f"Total files: {total_files}")
         logger.info(f"Total size: {total_bytes / (1024**3):.2f} GB")
         logger.info(f"Time elapsed: {elapsed_time}")
+        logger.info(f"Average speed: {total_bytes / (1024**2) / elapsed_time.total_seconds():.2f} MB/s")
         logger.info(f"Output directory: {self.output_dir.absolute()}")
         logger.info("="*70)
         
