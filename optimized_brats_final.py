@@ -746,7 +746,7 @@ class OptimizedUNet3D(nn.Module):
         # Decoder
         self.decoder = nn.ModuleList([
             DecoderBlock3D(filters[i + 1], filters[i], use_attention, attention_type)
-            for i in range(len(filters) - 1, 0, -1)
+            for i in range(len(filters) - 2, -1, -1)
         ])
         
         # Output convolution
