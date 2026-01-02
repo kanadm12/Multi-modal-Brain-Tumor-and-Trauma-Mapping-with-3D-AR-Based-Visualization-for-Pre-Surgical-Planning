@@ -815,17 +815,31 @@ class BraTSDataset3D(Dataset):
         
         try:
             # Load imaging data
-            modalities = ['t1', 't1ce', 't2', 'flair']
+            # Support both old (t1, t1ce, t2, flair) and new (t1n, t1c, t2w, t2f) naming
+            modality_mappings = [
+                ['t1', 't1n'],      # T1 native
+                ['t1ce', 't1c'],    # T1 contrast-enhanced
+                ['t2', 't2w'],      # T2 weighted
+                ['flair', 't2f']    # T2 FLAIR
+            ]
             img_data = []
             
-            for mod in modalities:
-                file_path = glob.glob(os.path.join(patient_dir, f"*_{mod}.nii.gz"))
+            for mod_variants in modality_mappings:
+                file_path = None
+                # Try each variant and both .nii.gz and .nii extensions
+                for mod in mod_variants:
+                    file_path = glob.glob(os.path.join(patient_dir, f"*{mod}.nii.gz"))
+                    if not file_path:
+                        file_path = glob.glob(os.path.join(patient_dir, f"*{mod}.nii"))
+                    if file_path:
+                        break
+                
                 if file_path:
                     img = nib.load(file_path[0]).get_fdata().astype(np.float32)
                     img = nnunet_normalize(img)
                     img_data.append(img)
                 else:
-                    logger.warning(f"Missing {mod} for {patient_id}")
+                    logger.warning(f"Missing {mod_variants} for {patient_id}")
                     if img_data:
                         img_data.append(np.zeros_like(img_data[0]))
                     else:
@@ -837,8 +851,11 @@ class BraTSDataset3D(Dataset):
             
             img = np.stack(img_data, axis=0)
             
-            # Load segmentation
-            seg_file = glob.glob(os.path.join(patient_dir, "*_seg.nii.gz"))
+            # Load segmentation (support both .nii.gz and .nii)
+            seg_file = glob.glob(os.path.join(patient_dir, "*seg.nii.gz"))
+            if not seg_file:
+                seg_file = glob.glob(os.path.join(patient_dir, "*seg.nii"))
+            
             if seg_file:
                 seg = nib.load(seg_file[0]).get_fdata().astype(np.uint8)
             else:
