@@ -832,12 +832,26 @@ class BraTSDataset3D(Dataset):
                     if not file_path:
                         file_path = glob.glob(os.path.join(patient_dir, f"*{mod}.nii"))
                     if file_path:
-                        break
+                        # Check if file is not empty
+                        if os.path.getsize(file_path[0]) > 1024:  # At least 1KB
+                            break
+                        else:
+                            file_path = None
                 
                 if file_path:
-                    img = nib.load(file_path[0]).get_fdata().astype(np.float32)
-                    img = nnunet_normalize(img)
-                    img_data.append(img)
+                    try:
+                        img = nib.load(file_path[0]).get_fdata().astype(np.float32)
+                        # Skip if image is empty or too small
+                        if img.size == 0 or np.all(img == 0):
+                            raise ValueError("Empty or zero image")
+                        img = nnunet_normalize(img)
+                        img_data.append(img)
+                    except Exception as e:
+                        logger.warning(f"Failed to load {mod_variants} for {patient_id}: {e}")
+                        if img_data:
+                            img_data.append(np.zeros_like(img_data[0]))
+                        else:
+                            img_data.append(np.zeros(self.crop_size))
                 else:
                     logger.warning(f"Missing {mod_variants} for {patient_id}")
                     if img_data:
@@ -848,6 +862,15 @@ class BraTSDataset3D(Dataset):
             if len(img_data) < 4:
                 logger.warning(f"Incomplete data for {patient_id}")
                 return None, None, patient_id
+            
+            # Ensure all modalities have the same shape
+            shapes = [m.shape for m in img_data]
+            if len(set(shapes)) > 1:
+                logger.warning(f"Inconsistent shapes for {patient_id}: {shapes}. Resampling to first modality shape.")
+                reference_shape = img_data[0].shape
+                for i in range(1, len(img_data)):
+                    if img_data[i].shape != reference_shape:
+                        img_data[i] = center_crop_or_pad(img_data[i], reference_shape)
             
             img = np.stack(img_data, axis=0)
             
