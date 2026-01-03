@@ -127,6 +127,10 @@ OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs_optimized_3fold")
 MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "models_optimized_3fold")
 TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
+# Preprocessing Configuration
+USE_PREPROCESSED = True  # Set to True after running preprocess_dataset.py
+NUM_WORKERS = 6  # DataLoader workers (can use with preprocessed data)
+
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
 NUM_CLASSES = 4  # Background + NCR + ED + ET
@@ -812,21 +816,32 @@ class OptimizedUNet3D(nn.Module):
 # ============================================================================
 
 class BraTSDataset3D(Dataset):
-    """BraTS 3D dataset loader"""
-    def __init__(self, data_dir, patient_ids, split='train', crop_size=CROP_SIZE):
+    """BraTS 3D dataset loader with support for preprocessed data"""
+    def __init__(self, data_dir, patient_ids, split='train', crop_size=CROP_SIZE, use_preprocessed=False):
         self.data_dir = data_dir
         self.patient_ids = patient_ids
         self.split = split
         self.crop_size = crop_size
+        self.use_preprocessed = use_preprocessed
+        
+        # Preprocessed data directory
+        if use_preprocessed:
+            base_dir = os.path.dirname(data_dir)
+            self.preprocessed_dir = os.path.join(base_dir, "preprocessed_data")
     
     def __len__(self):
         return len(self.patient_ids)
     
     def __getitem__(self, idx):
         patient_id = self.patient_ids[idx]
-        patient_dir = os.path.join(self.data_dir, patient_id)
         
         try:
+            # Load from preprocessed data if available
+            if self.use_preprocessed:
+                return self._load_preprocessed(patient_id)
+            
+            # Otherwise load from raw NIfTI files
+            patient_dir = os.path.join(self.data_dir, patient_id)
             # Load imaging data
             # Support both old (t1, t1ce, t2, flair) and new (t1n, t1c, t2w, t2f) naming
             modality_mappings = [
@@ -936,6 +951,30 @@ class BraTSDataset3D(Dataset):
         
         except Exception as e:
             logger.error(f"Error processing {patient_id}: {e}")
+            return None, None, patient_id
+    
+    def _load_preprocessed(self, patient_id):
+        """Load preprocessed NPY data (fast path)"""
+        try:
+            patient_dir = os.path.join(self.preprocessed_dir, patient_id)
+            
+            # Load image and segmentation
+            img = np.load(os.path.join(patient_dir, "image.npz"))['data'].astype(np.float32)
+            seg = np.load(os.path.join(patient_dir, "segmentation.npz"))['data'].astype(np.uint8)
+            
+            # Augmentation for training
+            if self.split == 'train':
+                img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
+                # Ensure augmentation didn't change dimensions
+                if img.shape[1:] != self.crop_size:
+                    img = np.stack([center_crop_or_pad(img[i], self.crop_size) for i in range(img.shape[0])])
+                if seg.shape != self.crop_size:
+                    seg = center_crop_or_pad(seg, self.crop_size)
+            
+            return torch.tensor(img, dtype=torch.float32), torch.tensor(seg, dtype=torch.long), patient_id
+        
+        except Exception as e:
+            logger.error(f"Error loading preprocessed data for {patient_id}: {e}")
             return None, None, patient_id
 
 def collate_fn_skip_none(batch):
@@ -1217,30 +1256,35 @@ def run_cross_validation(rank=0, world_size=1):
         logger.info(f"Train: {len(train_ids)}, Val: {len(val_ids)}, Test: {len(test_ids)}")
         
         # Datasets
-        train_dataset = BraTSDataset3D(DATA_DIR, train_ids, split='train')
-        val_dataset = BraTSDataset3D(DATA_DIR, val_ids, split='val')
-        test_dataset = BraTSDataset3D(DATA_DIR, test_ids, split='test')
+        train_dataset = BraTSDataset3D(DATA_DIR, train_ids, split='train', use_preprocessed=USE_PREPROCESSED)
+        val_dataset = BraTSDataset3D(DATA_DIR, val_ids, split='val', use_preprocessed=USE_PREPROCESSED)
+        test_dataset = BraTSDataset3D(DATA_DIR, test_ids, split='test', use_preprocessed=USE_PREPROCESSED)
         
-        # Loaders (no multiprocessing - main process only for I/O-heavy NIfTI loading)
+        # Loaders (can use workers with preprocessed data)
+        workers = NUM_WORKERS if USE_PREPROCESSED else 0
         if USE_MULTI_GPU and world_size > 1:
             train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
-                num_workers=0, pin_memory=True, collate_fn=collate_fn_skip_none
+                num_workers=workers, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=2 if workers > 0 else None,
+                persistent_workers=True if workers > 0 else False
             )
         else:
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                num_workers=0, pin_memory=True, collate_fn=collate_fn_skip_none
+                num_workers=workers, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=2 if workers > 0 else None,
+                persistent_workers=True if workers > 0 else False
             )
         
         val_loader = DataLoader(
             val_dataset, batch_size=1, shuffle=False,
-            num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none
+            num_workers=min(2, workers), pin_memory=True, collate_fn=collate_fn_skip_none
         )
         test_loader = DataLoader(
             test_dataset, batch_size=1, shuffle=False,
-            num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none
+            num_workers=min(2, workers), pin_memory=True, collate_fn=collate_fn_skip_none
         )
         
         # Model
