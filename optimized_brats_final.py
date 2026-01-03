@@ -904,15 +904,20 @@ class BraTSDataset3D(Dataset):
             img = np.stack([center_crop_or_pad(img[i], self.crop_size) for i in range(img.shape[0])])
             seg = center_crop_or_pad(seg, self.crop_size)
             
+            # Augmentation
+            if self.split == 'train':
+                img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
+                # Ensure augmentation didn't change dimensions
+                if img.shape[1:] != self.crop_size:
+                    img = np.stack([center_crop_or_pad(img[i], self.crop_size) for i in range(img.shape[0])])
+                if seg.shape != self.crop_size:
+                    seg = center_crop_or_pad(seg, self.crop_size)
+            
             # Final validation: ensure output shape is exactly as expected
             expected_shape = (4,) + self.crop_size
             if img.shape != expected_shape:
                 logger.error(f"Shape mismatch for {patient_id}: got {img.shape}, expected {expected_shape}")
                 return None, None, patient_id
-            
-            # Augmentation
-            if self.split == 'train':
-                img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
             
             return torch.tensor(img, dtype=torch.float32), torch.tensor(seg, dtype=torch.long), patient_id
         
