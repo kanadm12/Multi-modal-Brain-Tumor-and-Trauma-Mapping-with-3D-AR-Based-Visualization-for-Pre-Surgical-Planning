@@ -203,12 +203,11 @@ def run_test_training(rank, world_size, train_patients, val_patients):
     
     # Create loss, optimizer, scheduler
     loss_fn = CombinedLoss(
-        num_classes=NUM_CLASSES,
-        class_weights=CLASS_WEIGHTS.to(device),
         dice_weight=LOSS_DICE_WEIGHT,
         surface_weight=LOSS_SURFACE_WEIGHT,
         ce_weight=LOSS_CE_WEIGHT,
-        lovasz_weight=LOSS_LOVASZ_WEIGHT
+        lovasz_weight=LOSS_LOVASZ_WEIGHT,
+        class_weights=CLASS_WEIGHTS.to(device)
     )
     
     optimizer = AdamW(
