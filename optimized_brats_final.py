@@ -1543,18 +1543,21 @@ def run_cross_validation(rank=0, world_size=1):
             
             train_loss = train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, ACCUMULATION_STEPS, rank)
             
-            # Only validate on rank 0 (single GPU validation)
+            # Validate on ALL GPUs in parallel (4x faster than single GPU)
             # Disable post-processing during training for speed (use for final test only)
-            if rank == 0:
-                val_dice, val_hd95 = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank)
-            else:
-                val_dice, val_hd95 = 0.0, 0.0
+            val_dice, val_hd95 = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank)
             
-            # Broadcast validation metrics to all ranks
+            # Aggregate validation metrics across all ranks
             if USE_MULTI_GPU and world_size > 1:
                 val_dice_tensor = torch.tensor([val_dice], device=device)
-                dist.broadcast(val_dice_tensor, src=0)
+                val_hd95_tensor = torch.tensor([val_hd95], device=device)
+                
+                # All-reduce to average metrics across GPUs
+                dist.all_reduce(val_dice_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(val_hd95_tensor, op=dist.ReduceOp.AVG)
+                
                 val_dice = val_dice_tensor.item()
+                val_hd95 = val_hd95_tensor.item()
             
             # Step scheduler (handles both warmup and plateau)
             if USE_WARMUP:
