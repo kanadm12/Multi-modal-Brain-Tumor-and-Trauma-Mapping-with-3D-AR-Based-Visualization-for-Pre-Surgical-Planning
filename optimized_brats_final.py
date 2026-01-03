@@ -147,8 +147,8 @@ DROPOUT_RATE = 0.2
 USE_GRADIENT_CHECKPOINTING = True  # Save memory at cost of ~20% speed
 
 # Training Hyperparameters
-BATCH_SIZE = 3  # Per GPU - leaves room for DataLoader workers
-ACCUMULATION_STEPS = 5  # Effective batch size = 60 (3 x 5 x 4 GPUs)
+BATCH_SIZE = 2  # Per GPU - reduced for 4 workers memory overhead
+ACCUMULATION_STEPS = 8  # Effective batch size = 64 (2 x 8 x 4 GPUs)
 EPOCHS = 500
 INITIAL_LR = 2e-4
 WEIGHT_DECAY = 1e-4
