@@ -752,9 +752,11 @@ class OptimizedUNet3D(nn.Module):
         # Output convolution
         self.output_conv = nn.Conv3d(filters[0], num_classes, 1)
         
-        # Deep supervision heads
+        # Deep supervision heads - match decoder output channels
+        # Decoder outputs go from filters[3] -> filters[2] -> filters[1] -> filters[0]
         self.aux_outputs = nn.ModuleList([
-            nn.Conv3d(filters[i], num_classes, 1) for i in range(len(filters) - 1)
+            nn.Conv3d(filters[i], num_classes, 1) 
+            for i in range(len(filters) - 2, -1, -1)  # [3, 2, 1, 0]
         ])
         
         self.dropout = nn.Dropout3d(dropout)
