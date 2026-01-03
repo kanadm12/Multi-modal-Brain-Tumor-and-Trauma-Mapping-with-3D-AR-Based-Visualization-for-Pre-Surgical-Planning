@@ -127,9 +127,9 @@ OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs_optimized_3fold")
 MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "models_optimized_3fold")
 TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
-# Preprocessing Configuration
-USE_PREPROCESSED = True  # Set to True after running preprocess_dataset.py
-NUM_WORKERS = 6  # DataLoader workers (can use with preprocessed data)
+# Data Loading Configuration
+USE_PREPROCESSED = False  # Train directly from NIfTI files
+NUM_WORKERS = 4  # Parallel data loading workers per GPU
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
@@ -147,8 +147,8 @@ DROPOUT_RATE = 0.2
 USE_GRADIENT_CHECKPOINTING = True  # Save memory at cost of ~20% speed
 
 # Training Hyperparameters
-BATCH_SIZE = 4  # Per GPU - utilizing RTX 4090's 24GB memory
-ACCUMULATION_STEPS = 4  # Effective batch size = 64
+BATCH_SIZE = 3  # Per GPU - leaves room for DataLoader workers
+ACCUMULATION_STEPS = 5  # Effective batch size = 60 (3 x 5 x 4 GPUs)
 EPOCHS = 500
 INITIAL_LR = 2e-4
 WEIGHT_DECAY = 1e-4
@@ -1194,6 +1194,17 @@ def run_cross_validation(rank=0, world_size=1):
         rank: GPU rank for DDP (0 for single GPU)
         world_size: Total number of GPUs
     """
+    # Set multiprocessing start method to 'spawn' for safer NIfTI loading
+    # 'spawn' creates fresh processes (safer with nibabel C extensions)
+    # 'fork' copies parent memory (faster but can cause issues with nibabel)
+    if not USE_PREPROCESSED:
+        try:
+            mp.set_start_method('spawn', force=True)
+            if rank == 0:
+                logger.info("Set multiprocessing start method to 'spawn' for safe NIfTI loading")
+        except RuntimeError:
+            pass  # Already set
+    
     # Setup DDP if using multi-GPU
     if USE_MULTI_GPU and world_size > 1:
         setup_ddp(rank, world_size)
@@ -1217,6 +1228,10 @@ def run_cross_validation(rank=0, world_size=1):
         logger.info(f"  Device: {device}")
         logger.info(f"  Use TTA: {USE_TTA}")
         logger.info(f"  Use AMP: {USE_AMP}")
+        logger.info(f"Data Loading Configuration:")
+        logger.info(f"  Preprocessed Data: {'Yes' if USE_PREPROCESSED else 'No (loading raw NIfTI)'}")
+        logger.info(f"  DataLoader Workers: {NUM_WORKERS}")
+        logger.info(f"  Multiprocessing Method: {'spawn (safe for NIfTI)' if not USE_PREPROCESSED else 'default'}")
         logger.info(f"=" * 80)
     
     # Get patient IDs
@@ -1260,31 +1275,38 @@ def run_cross_validation(rank=0, world_size=1):
         val_dataset = BraTSDataset3D(DATA_DIR, val_ids, split='val', use_preprocessed=USE_PREPROCESSED)
         test_dataset = BraTSDataset3D(DATA_DIR, test_ids, split='test', use_preprocessed=USE_PREPROCESSED)
         
-        # Loaders (can use workers with preprocessed data)
-        workers = NUM_WORKERS if USE_PREPROCESSED else 0
+        # DataLoader configuration for parallel loading
+        # With raw NIfTI: use moderate workers (4) with spawn method
+        # With preprocessed: can use more workers (6+) with prefetching
+        workers = NUM_WORKERS if NUM_WORKERS > 0 else 0
+        use_prefetch = USE_PREPROCESSED and workers > 0
+        use_persistent = USE_PREPROCESSED and workers > 0
+        
         if USE_MULTI_GPU and world_size > 1:
             train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
                 num_workers=workers, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=2 if workers > 0 else None,
-                persistent_workers=True if workers > 0 else False
+                prefetch_factor=2 if use_prefetch else None,
+                persistent_workers=use_persistent
             )
         else:
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, shuffle=True,
                 num_workers=workers, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=2 if workers > 0 else None,
-                persistent_workers=True if workers > 0 else False
+                prefetch_factor=2 if use_prefetch else None,
+                persistent_workers=use_persistent
             )
         
         val_loader = DataLoader(
             val_dataset, batch_size=1, shuffle=False,
-            num_workers=min(2, workers), pin_memory=True, collate_fn=collate_fn_skip_none
+            num_workers=min(2, workers) if workers > 0 else 0, 
+            pin_memory=True, collate_fn=collate_fn_skip_none
         )
         test_loader = DataLoader(
             test_dataset, batch_size=1, shuffle=False,
-            num_workers=min(2, workers), pin_memory=True, collate_fn=collate_fn_skip_none
+            num_workers=min(2, workers) if workers > 0 else 0, 
+            pin_memory=True, collate_fn=collate_fn_skip_none
         )
         
         # Model
