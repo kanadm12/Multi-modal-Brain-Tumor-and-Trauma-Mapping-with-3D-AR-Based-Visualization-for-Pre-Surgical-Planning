@@ -128,8 +128,8 @@ MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "models_optimized_3fold")
 TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Data Loading Configuration
-USE_PREPROCESSED = False  # Train directly from NIfTI files
-NUM_WORKERS = 1  # Single worker per GPU (4 total) - balance CPU/GPU without overwhelming I/O
+USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
+NUM_WORKERS = 6  # Parallel data loading workers per GPU (can use more with preprocessed)
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
