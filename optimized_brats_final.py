@@ -129,7 +129,7 @@ TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Data Loading Configuration
 USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
-NUM_WORKERS = 6  # Parallel data loading workers per GPU (can use more with preprocessed)
+NUM_WORKERS = 2  # Reduce workers - even preprocessed data can deadlock with too many
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
@@ -966,14 +966,9 @@ class BraTSDataset3D(Dataset):
             img = np.load(os.path.join(patient_dir, "image.npz"))['data'].astype(np.float32)
             seg = np.load(os.path.join(patient_dir, "segmentation.npz"))['data'].astype(np.uint8)
             
-            # Augmentation for training
-            if self.split == 'train':
-                img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
-                # Ensure augmentation didn't change dimensions
-                if img.shape[1:] != self.crop_size:
-                    img = np.stack([center_crop_or_pad(img[i], self.crop_size) for i in range(img.shape[0])])
-                if seg.shape != self.crop_size:
-                    seg = center_crop_or_pad(seg, self.crop_size)
+            # Skip augmentation for now (debugging) - TODO: re-enable after first successful batch
+            # if self.split == 'train':
+            #     img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
             
             return torch.tensor(img, dtype=torch.float32), torch.tensor(seg, dtype=torch.long), patient_id
         
