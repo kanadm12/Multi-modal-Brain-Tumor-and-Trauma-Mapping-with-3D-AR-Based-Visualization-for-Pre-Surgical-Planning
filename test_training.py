@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import from main script
 from optimized_brats_final import (
-    OptimizedUNet3D, BraTSDataset, BraTSDatasetPreprocessed,
+    OptimizedUNet3D, BraTSDataset3D,
     CombinedLoss, train_epoch, validate_epoch,
     create_lr_scheduler, setup_ddp, cleanup_ddp,
     save_checkpoint, load_checkpoint, find_latest_checkpoint
@@ -152,13 +152,13 @@ def run_test_training(rank, world_size, train_patients, val_patients):
         logger.info(f"Train: {len(train_patients)}, Val: {len(val_patients)}")
     
     # Create datasets
-    train_dataset = BraTSDatasetPreprocessed(
-        train_patients, PREPROCESSED_DIR, CROP_SIZE, 
-        augment=True, augmentation_prob=AUGMENTATION_PROBABILITY
+    train_dataset = BraTSDataset3D(
+        PREPROCESSED_DIR, train_patients, split='train', 
+        crop_size=CROP_SIZE, use_preprocessed=True
     )
-    val_dataset = BraTSDatasetPreprocessed(
-        val_patients, PREPROCESSED_DIR, CROP_SIZE, 
-        augment=False
+    val_dataset = BraTSDataset3D(
+        PREPROCESSED_DIR, val_patients, split='val',
+        crop_size=CROP_SIZE, use_preprocessed=True
     )
     
     # Create samplers for DDP
