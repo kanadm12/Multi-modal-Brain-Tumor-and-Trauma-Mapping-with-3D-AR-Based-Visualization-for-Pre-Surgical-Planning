@@ -129,7 +129,7 @@ TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Data Loading Configuration
 USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
-NUM_WORKERS = 2  # Reduce workers - even preprocessed data can deadlock with too many
+NUM_WORKERS = 0  # Disable multiprocessing for debugging - test if training works at all
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
