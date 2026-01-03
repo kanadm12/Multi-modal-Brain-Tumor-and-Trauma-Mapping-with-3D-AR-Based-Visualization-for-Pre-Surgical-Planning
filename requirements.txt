@@ -7,7 +7,7 @@ torchvision>=0.15.0
 torchaudio>=2.0.0
 
 # Medical Imaging
-nibabel>=5.0.0
+SimpleITK>=2.3.0  # Fast NIfTI loading with better multiprocessing support
 
 # Scientific Computing
 numpy>=1.24.0

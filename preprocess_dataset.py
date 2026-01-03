@@ -16,7 +16,7 @@ Usage:
 import os
 import glob
 import numpy as np
-import nibabel as nib
+import SimpleITK as sitk
 from pathlib import Path
 from tqdm import tqdm
 import multiprocessing as mp
@@ -96,7 +96,9 @@ def preprocess_patient(patient_id, data_dir, output_dir, crop_size):
                     break
             
             if file_path:
-                img = nib.load(file_path[0]).get_fdata().astype(np.float32)
+                # SimpleITK loading (2-3x faster than nibabel)
+                img_sitk = sitk.ReadImage(file_path[0])
+                img = sitk.GetArrayFromImage(img_sitk).astype(np.float32)
                 img = nnunet_normalize(img)
                 img_data.append(img)
             else:
@@ -123,7 +125,9 @@ def preprocess_patient(patient_id, data_dir, output_dir, crop_size):
             seg_file_path = glob.glob(os.path.join(patient_dir, "*seg.nii"))
         
         if seg_file_path and os.path.getsize(seg_file_path[0]) > 1024:
-            seg = nib.load(seg_file_path[0]).get_fdata().astype(np.uint8)
+            # SimpleITK loading (2-3x faster than nibabel)
+            seg_sitk = sitk.ReadImage(seg_file_path[0])
+            seg = sitk.GetArrayFromImage(seg_sitk).astype(np.uint8)
         else:
             return patient_id, "missing_segmentation"
         

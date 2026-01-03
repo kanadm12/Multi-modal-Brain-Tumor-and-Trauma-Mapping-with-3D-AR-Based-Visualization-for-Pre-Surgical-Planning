@@ -25,7 +25,7 @@ import glob
 import random
 import gc
 import numpy as np
-import nibabel as nib
+import SimpleITK as sitk
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -868,7 +868,9 @@ class BraTSDataset3D(Dataset):
                 
                 if file_path:
                     try:
-                        img = nib.load(file_path[0]).get_fdata().astype(np.float32)
+                        # SimpleITK loading (2-3x faster than nibabel, better multiprocessing)
+                        img_sitk = sitk.ReadImage(file_path[0])
+                        img = sitk.GetArrayFromImage(img_sitk).astype(np.float32)
                         # Skip if image is empty or too small
                         if img.size == 0 or np.all(img == 0):
                             raise ValueError("Empty or zero image")
@@ -910,7 +912,9 @@ class BraTSDataset3D(Dataset):
             # Check file is not empty
             if seg_file and os.path.getsize(seg_file[0]) > 1024:
                 try:
-                    seg = nib.load(seg_file[0]).get_fdata().astype(np.uint8)
+                    # SimpleITK loading (2-3x faster than nibabel)
+                    seg_sitk = sitk.ReadImage(seg_file[0])
+                    seg = sitk.GetArrayFromImage(seg_sitk).astype(np.uint8)
                 except Exception as e:
                     logger.warning(f"Failed to load segmentation for {patient_id}: {e}")
                     seg = np.zeros(img[0].shape, dtype=np.uint8)
