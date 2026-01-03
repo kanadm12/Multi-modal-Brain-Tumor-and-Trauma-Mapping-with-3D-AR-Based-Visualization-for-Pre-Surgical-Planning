@@ -129,7 +129,7 @@ TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Data Loading Configuration
 USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
-NUM_WORKERS = 0  # Disable multiprocessing for debugging - test if training works at all
+NUM_WORKERS = 4  # Workers per DataLoader (NOT per GPU - total across all loaders)
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
@@ -966,9 +966,14 @@ class BraTSDataset3D(Dataset):
             img = np.load(os.path.join(patient_dir, "image.npz"))['data'].astype(np.float32)
             seg = np.load(os.path.join(patient_dir, "segmentation.npz"))['data'].astype(np.uint8)
             
-            # Skip augmentation for now (debugging) - TODO: re-enable after first successful batch
-            # if self.split == 'train':
-            #     img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
+            # Augmentation for training
+            if self.split == 'train':
+                img, seg = augment_data(img, seg, AUGMENTATION_PROBABILITY)
+                # Ensure augmentation didn't change dimensions
+                if img.shape[1:] != self.crop_size:
+                    img = np.stack([center_crop_or_pad(img[i], self.crop_size) for i in range(img.shape[0])])
+                if seg.shape != self.crop_size:
+                    seg = center_crop_or_pad(seg, self.crop_size)
             
             return torch.tensor(img, dtype=torch.float32), torch.tensor(seg, dtype=torch.long), patient_id
         
@@ -1274,38 +1279,53 @@ def run_cross_validation(rank=0, world_size=1):
         val_dataset = BraTSDataset3D(DATA_DIR, val_ids, split='val', use_preprocessed=USE_PREPROCESSED)
         test_dataset = BraTSDataset3D(DATA_DIR, test_ids, split='test', use_preprocessed=USE_PREPROCESSED)
         
-        # DataLoader configuration for parallel loading
-        # With raw NIfTI: use moderate workers (4) with spawn method
-        # With preprocessed: can use more workers (6+) with prefetching
-        workers = NUM_WORKERS if NUM_WORKERS > 0 else 0
-        use_prefetch = USE_PREPROCESSED and workers > 0
-        use_persistent = USE_PREPROCESSED and workers > 0
+        # DataLoader configuration - simplified for DDP compatibility
+        # Each GPU process creates its own DataLoader with NUM_WORKERS workers
+        workers = NUM_WORKERS
         
         if USE_MULTI_GPU and world_size > 1:
             train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
-                train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
-                num_workers=workers, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=2 if use_prefetch else None,
-                persistent_workers=use_persistent
+                train_dataset, 
+                batch_size=BATCH_SIZE, 
+                sampler=train_sampler,
+                num_workers=workers, 
+                pin_memory=True, 
+                collate_fn=collate_fn_skip_none,
+                prefetch_factor=2 if workers > 0 else None,
+                persistent_workers=workers > 0,
+                timeout=60 if workers > 0 else 0  # 60s timeout to fail fast
             )
         else:
             train_loader = DataLoader(
-                train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                num_workers=workers, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=2 if use_prefetch else None,
-                persistent_workers=use_persistent
+                train_dataset, 
+                batch_size=BATCH_SIZE, 
+                shuffle=True,
+                num_workers=workers, 
+                pin_memory=True, 
+                collate_fn=collate_fn_skip_none,
+                prefetch_factor=2 if workers > 0 else None,
+                persistent_workers=workers > 0,
+                timeout=60 if workers > 0 else 0
             )
         
         val_loader = DataLoader(
-            val_dataset, batch_size=1, shuffle=False,
-            num_workers=min(2, workers) if workers > 0 else 0, 
-            pin_memory=True, collate_fn=collate_fn_skip_none
+            val_dataset, 
+            batch_size=1, 
+            shuffle=False,
+            num_workers=2 if workers > 0 else 0, 
+            pin_memory=True, 
+            collate_fn=collate_fn_skip_none,
+            timeout=60 if workers > 0 else 0
         )
         test_loader = DataLoader(
-            test_dataset, batch_size=1, shuffle=False,
-            num_workers=min(2, workers) if workers > 0 else 0, 
-            pin_memory=True, collate_fn=collate_fn_skip_none
+            test_dataset, 
+            batch_size=1, 
+            shuffle=False,
+            num_workers=2 if workers > 0 else 0, 
+            pin_memory=True, 
+            collate_fn=collate_fn_skip_none,
+            timeout=60 if workers > 0 else 0
         )
         
         # Model
