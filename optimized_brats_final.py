@@ -130,7 +130,7 @@ TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Data Loading Configuration
 USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
-NUM_WORKERS = 4  # Workers per DataLoader (NOT per GPU - total across all loaders)
+NUM_WORKERS = 6  # Workers per DataLoader - A100 has better CPU
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
@@ -138,18 +138,18 @@ NUM_CLASSES = 4  # Background + NCR + ED + ET
 IN_CHANNELS = 4  # T1, T1c, T2, FLAIR
 N_FOLDS = 3  # 3-fold cross-validation
 
-# Model Architecture
-MODEL_FILTERS = [32, 64, 128, 256, 512]  # Reduced for RTX 4090 (24GB)
+# Model Architecture - OPTIMIZED FOR A100 (80GB)
+MODEL_FILTERS = [48, 96, 192, 384, 768]  # Larger model for A100
 USE_ATTENTION = True
 ATTENTION_TYPE = 'transformer'  # 'transformer' or 'lightweight'
 NUM_ATTENTION_HEADS = 8
-TRANSFORMER_DEPTH = 1  # Reduced from 2
+TRANSFORMER_DEPTH = 2  # A100 can handle depth 2
 DROPOUT_RATE = 0.2
-USE_GRADIENT_CHECKPOINTING = True  # Save memory at cost of ~20% speed
+USE_GRADIENT_CHECKPOINTING = False  # A100 has enough memory, 20% speedup
 
-# Training Hyperparameters
-BATCH_SIZE = 2  # Per GPU - reduced for 4 workers memory overhead
-ACCUMULATION_STEPS = 8  # Effective batch size = 64 (2 x 8 x 4 GPUs)
+# Training Hyperparameters - OPTIMIZED FOR A100
+BATCH_SIZE = 4  # Per GPU - A100 has 2x memory of 4090
+ACCUMULATION_STEPS = 4  # Effective batch size = 64 (4 x 4 x 4 GPUs)
 EPOCHS = 500
 INITIAL_LR = 2e-4
 WEIGHT_DECAY = 1e-4
