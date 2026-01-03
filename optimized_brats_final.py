@@ -1226,14 +1226,14 @@ def run_cross_validation(rank=0, world_size=1):
             train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
-                num_workers=4, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=2, persistent_workers=True
+                num_workers=8, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=3, persistent_workers=True
             )
         else:
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                num_workers=4, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=2, persistent_workers=True
+                num_workers=8, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=3, persistent_workers=True
             )
         
         val_loader = DataLoader(
