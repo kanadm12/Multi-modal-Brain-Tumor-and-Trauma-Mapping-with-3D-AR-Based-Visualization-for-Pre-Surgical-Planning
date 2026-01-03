@@ -128,22 +128,22 @@ MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "models_optimized_3fold")
 TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Input/Output Configuration
-CROP_SIZE = (160, 192, 160)  # Larger input size for better context
+CROP_SIZE = (128, 160, 128)  # Reduced for memory efficiency
 NUM_CLASSES = 4  # Background + NCR + ED + ET
 IN_CHANNELS = 4  # T1, T1c, T2, FLAIR
 N_FOLDS = 3  # 3-fold cross-validation
 
 # Model Architecture
-MODEL_FILTERS = [48, 96, 192, 384, 768]  # Increased capacity (1.5x)
+MODEL_FILTERS = [32, 64, 128, 256, 512]  # Reduced for RTX 4090 (24GB)
 USE_ATTENTION = True
 ATTENTION_TYPE = 'transformer'  # 'transformer' or 'lightweight'
 NUM_ATTENTION_HEADS = 8
-TRANSFORMER_DEPTH = 2
+TRANSFORMER_DEPTH = 1  # Reduced from 2
 DROPOUT_RATE = 0.2
 
 # Training Hyperparameters
-BATCH_SIZE = 2  # Per GPU
-ACCUMULATION_STEPS = 8  # Effective batch size = 16
+BATCH_SIZE = 1  # Per GPU (reduced for memory)
+ACCUMULATION_STEPS = 16  # Effective batch size = 16
 EPOCHS = 500
 INITIAL_LR = 2e-4
 WEIGHT_DECAY = 1e-4
