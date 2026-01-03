@@ -15,11 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import from main script
 from optimized_brats_final import (
-    OptimizedUNet3D, BraTSDataset3D,
-    CombinedLoss, train_epoch, validate_epoch,
-    create_lr_scheduler, setup_ddp, cleanup_ddp,
-    save_checkpoint, load_checkpoint, find_latest_checkpoint
+    OptimizedUNet3D, BraTSDataset3D, CombinedLoss,
+    train_epoch, validate_epoch, WarmupScheduler,
+    setup_ddp, cleanup_ddp, save_checkpoint
 )
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # ============================================================================
 # TEST CONFIGURATION
@@ -211,12 +212,27 @@ def run_test_training(rank, world_size, train_patients, val_patients):
         lovasz_weight=LOSS_LOVASZ_WEIGHT
     )
     
-    optimizer = torch.optim.AdamW(
+    optimizer = AdamW(
         model.parameters(), lr=INITIAL_LR, 
         weight_decay=WEIGHT_DECAY, eps=EPSILON
     )
     
-    scheduler = create_lr_scheduler(optimizer, mode='min', patience=5)
+    # Create scheduler
+    plateau_scheduler = ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=5,
+        verbose=False, min_lr=1e-7
+    )
+    
+    if USE_WARMUP:
+        scheduler = WarmupScheduler(
+            optimizer=optimizer,
+            warmup_epochs=WARMUP_EPOCHS,
+            initial_lr=INITIAL_LR,
+            after_scheduler=plateau_scheduler
+        )
+    else:
+        scheduler = plateau_scheduler
+    
     scaler = torch.amp.GradScaler('cuda') if USE_AMP else None
     
     if rank == 0:
