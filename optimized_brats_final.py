@@ -143,8 +143,8 @@ DROPOUT_RATE = 0.2
 USE_GRADIENT_CHECKPOINTING = True  # Save memory at cost of ~20% speed
 
 # Training Hyperparameters
-BATCH_SIZE = 1  # Per GPU (reduced for memory)
-ACCUMULATION_STEPS = 16  # Effective batch size = 64
+BATCH_SIZE = 2  # Per GPU (increased for efficiency)
+ACCUMULATION_STEPS = 8  # Effective batch size = 64
 EPOCHS = 500
 INITIAL_LR = 2e-4
 WEIGHT_DECAY = 1e-4
@@ -1226,12 +1226,14 @@ def run_cross_validation(rank=0, world_size=1):
             train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
-                num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none
+                num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=2, persistent_workers=True
             )
         else:
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none
+                num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=2, persistent_workers=True
             )
         
         val_loader = DataLoader(
