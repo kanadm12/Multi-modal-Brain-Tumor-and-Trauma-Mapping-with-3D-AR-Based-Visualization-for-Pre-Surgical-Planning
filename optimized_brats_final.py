@@ -1221,19 +1221,19 @@ def run_cross_validation(rank=0, world_size=1):
         val_dataset = BraTSDataset3D(DATA_DIR, val_ids, split='val')
         test_dataset = BraTSDataset3D(DATA_DIR, test_ids, split='test')
         
-        # Loaders with DDP sampler
+        # Loaders with DDP sampler (I/O-bound, so fewer workers is better)
         if USE_MULTI_GPU and world_size > 1:
             train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
-                num_workers=8, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=3, persistent_workers=True
+                num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=2, persistent_workers=True
             )
         else:
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                num_workers=8, pin_memory=True, collate_fn=collate_fn_skip_none,
-                prefetch_factor=3, persistent_workers=True
+                num_workers=2, pin_memory=True, collate_fn=collate_fn_skip_none,
+                prefetch_factor=2, persistent_workers=True
             )
         
         val_loader = DataLoader(
