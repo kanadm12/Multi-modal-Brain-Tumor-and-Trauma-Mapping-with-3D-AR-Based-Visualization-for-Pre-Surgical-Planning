@@ -188,9 +188,8 @@ def run_test_training(rank, world_size, train_patients, val_patients):
         use_attention=USE_ATTENTION,
         attention_type=ATTENTION_TYPE,
         num_heads=NUM_ATTENTION_HEADS,
-        transformer_depth=TRANSFORMER_DEPTH,
-        dropout_rate=DROPOUT_RATE,
-        use_gradient_checkpointing=USE_GRADIENT_CHECKPOINTING
+        dropout=DROPOUT_RATE,
+        use_checkpointing=USE_GRADIENT_CHECKPOINTING
     ).to(device)
     
     # Wrap with DDP
