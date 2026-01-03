@@ -1153,7 +1153,7 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, accumul
     
     return total_loss / num_batches if num_batches > 0 else 0.0
 
-def validate_epoch(model, val_loader, device, use_tta=False, rank=0):
+def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=True, rank=0):
     """Validate for one epoch"""
     model.eval()
     all_dice = []
@@ -1192,8 +1192,8 @@ def validate_epoch(model, val_loader, device, use_tta=False, rank=0):
                     outputs, _ = model(images)
                     pred = torch.argmax(outputs, dim=1, keepdim=True)
             
-            # Post-processing
-            if USE_ADAPTIVE_POSTPROCESSING:
+            # Post-processing (only if enabled - disabled during training for speed)
+            if use_postprocessing and USE_ADAPTIVE_POSTPROCESSING:
                 for b in range(pred.shape[0]):
                     pred[b] = adaptive_postprocessing(pred[b], min_size=MIN_COMPONENT_SIZE)
             
@@ -1544,8 +1544,9 @@ def run_cross_validation(rank=0, world_size=1):
             train_loss = train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, ACCUMULATION_STEPS, rank)
             
             # Only validate on rank 0 (single GPU validation)
+            # Disable post-processing during training for speed (use for final test only)
             if rank == 0:
-                val_dice, val_hd95 = validate_epoch(model, val_loader, device, use_tta=False, rank=rank)
+                val_dice, val_hd95 = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank)
             else:
                 val_dice, val_hd95 = 0.0, 0.0
             
