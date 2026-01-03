@@ -1047,39 +1047,54 @@ def adaptive_postprocessing(prediction, min_size=150):
     pred_np = prediction.cpu().numpy().astype(np.uint8)
     processed = np.zeros_like(pred_np)
     
+    # Create 3D structure element once
+    struct_elem = ndimage.generate_binary_structure(3, 1)
+    
     for class_id in range(1, 4):  # NCR, ED, ET
-        mask = (pred_np == class_id)
+        mask = (pred_np == class_id).astype(bool)
         
         if not np.any(mask):
             continue
         
         # Fill holes
-        mask = binary_fill_holes(mask)
+        try:
+            mask = binary_fill_holes(mask)
+        except:
+            pass  # If fill_holes fails, continue with original mask
         
         # Adaptive smoothing
         tumor_size = np.sum(mask)
         
         if tumor_size > 1000:
-            smooth_iter = 3
-        elif tumor_size > 500:
             smooth_iter = 2
+        elif tumor_size > 500:
+            smooth_iter = 1
         else:
             smooth_iter = 1
         
-        mask = binary_closing(mask, structure=np.ones((3, 3, 3)), iterations=smooth_iter)
-        mask = binary_opening(mask, structure=np.ones((3, 3, 3)), iterations=smooth_iter)
+        # Apply morphological operations with proper 3D structure
+        try:
+            mask = ndimage.binary_closing(mask, structure=struct_elem, iterations=smooth_iter)
+            mask = ndimage.binary_opening(mask, structure=struct_elem, iterations=smooth_iter)
+        except:
+            pass  # If morphological operations fail, continue with filled mask
         
         # Connected components analysis
         labeled, num_features = ndimage_label(mask)
         
-        for feature_id in range(1, num_features + 1):
-            component = (labeled == feature_id)
-            if np.sum(component) > min_size:
-                processed[component] = class_id
+        if num_features == 0:
+            continue
         
-        # Extra smoothing for ET
-        if class_id == 3:
-            processed[mask & (processed == class_id)] = class_id
+        # Keep only large enough components
+        component_sizes = np.bincount(labeled.ravel())
+        for feature_id in range(1, num_features + 1):
+            if component_sizes[feature_id] >= min_size:
+                processed[labeled == feature_id] = class_id
+        
+        # If no components were kept, keep the largest one
+        if np.sum(processed == class_id) == 0 and num_features > 0:
+            largest_component = np.argmax(component_sizes[1:]) + 1
+            processed[labeled == largest_component] = class_id
     
     return torch.tensor(processed, device=prediction.device, dtype=torch.long)
 
