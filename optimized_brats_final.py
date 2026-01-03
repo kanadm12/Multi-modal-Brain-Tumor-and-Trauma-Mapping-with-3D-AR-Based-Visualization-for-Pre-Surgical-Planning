@@ -45,7 +45,8 @@ from scipy.spatial.distance import cdist
 from scipy.ndimage import (
     label as ndimage_label, binary_closing, binary_opening, 
     gaussian_filter, map_coordinates, binary_fill_holes,
-    distance_transform_edt, binary_erosion, binary_dilation
+    distance_transform_edt, binary_erosion, binary_dilation,
+    generate_binary_structure
 )
 from sklearn.model_selection import KFold
 import math
@@ -1048,7 +1049,7 @@ def adaptive_postprocessing(prediction, min_size=150):
     processed = np.zeros_like(pred_np)
     
     # Create 3D structure element once
-    struct_elem = ndimage.generate_binary_structure(3, 1)
+    struct_elem = generate_binary_structure(3, 1)
     
     for class_id in range(1, 4):  # NCR, ED, ET
         mask = (pred_np == class_id).astype(bool)
@@ -1074,8 +1075,8 @@ def adaptive_postprocessing(prediction, min_size=150):
         
         # Apply morphological operations with proper 3D structure
         try:
-            mask = ndimage.binary_closing(mask, structure=struct_elem, iterations=smooth_iter)
-            mask = ndimage.binary_opening(mask, structure=struct_elem, iterations=smooth_iter)
+            mask = binary_closing(mask, structure=struct_elem, iterations=smooth_iter)
+            mask = binary_opening(mask, structure=struct_elem, iterations=smooth_iter)
         except:
             pass  # If morphological operations fail, continue with filled mask
         
