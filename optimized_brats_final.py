@@ -129,7 +129,7 @@ TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Data Loading Configuration
 USE_PREPROCESSED = False  # Train directly from NIfTI files
-NUM_WORKERS = 4  # Parallel data loading workers per GPU
+NUM_WORKERS = 2  # Parallel data loading workers per GPU (2 x 4 GPUs = 8 total)
 
 # Input/Output Configuration
 CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
