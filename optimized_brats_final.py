@@ -128,7 +128,7 @@ MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "models_optimized_3fold")
 TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard_optimized_3fold")
 
 # Input/Output Configuration
-CROP_SIZE = (128, 160, 128)  # Reduced for memory efficiency
+CROP_SIZE = (160, 192, 160)  # Keep larger for accuracy
 NUM_CLASSES = 4  # Background + NCR + ED + ET
 IN_CHANNELS = 4  # T1, T1c, T2, FLAIR
 N_FOLDS = 3  # 3-fold cross-validation
@@ -140,10 +140,11 @@ ATTENTION_TYPE = 'transformer'  # 'transformer' or 'lightweight'
 NUM_ATTENTION_HEADS = 8
 TRANSFORMER_DEPTH = 1  # Reduced from 2
 DROPOUT_RATE = 0.2
+USE_GRADIENT_CHECKPOINTING = True  # Save memory at cost of ~20% speed
 
 # Training Hyperparameters
 BATCH_SIZE = 1  # Per GPU (reduced for memory)
-ACCUMULATION_STEPS = 16  # Effective batch size = 16
+ACCUMULATION_STEPS = 16  # Effective batch size = 64
 EPOCHS = 500
 INITIAL_LR = 2e-4
 WEIGHT_DECAY = 1e-4
@@ -719,7 +720,7 @@ class DecoderBlock3D(nn.Module):
 class OptimizedUNet3D(nn.Module):
     """Optimized 3D U-Net with transformer bottleneck and deep supervision"""
     def __init__(self, in_channels, num_classes, filters, use_attention=True, 
-                 attention_type='transformer', num_heads=8, dropout=0.2):
+                 attention_type='transformer', num_heads=8, dropout=0.2, use_checkpointing=False):
         super().__init__()
         
         self.in_channels = in_channels
@@ -727,6 +728,7 @@ class OptimizedUNet3D(nn.Module):
         self.filters = filters
         self.use_attention = use_attention
         self.attention_type = attention_type
+        self.use_checkpointing = use_checkpointing
         
         # Input convolution
         self.input_conv = nn.Sequential(
@@ -771,18 +773,27 @@ class OptimizedUNet3D(nn.Module):
         
         for encoder_block in self.encoder:
             x = F.max_pool3d(x, 2)
-            x = encoder_block(x)
+            if self.use_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(encoder_block, x, use_reentrant=False)
+            else:
+                x = encoder_block(x)
             x = self.dropout(x)
             encoder_outputs.append(x)
         
         # Bottleneck
-        x = self.bottleneck(x)
+        if self.use_checkpointing and self.training:
+            x = torch.utils.checkpoint.checkpoint(self.bottleneck, x, use_reentrant=False)
+        else:
+            x = self.bottleneck(x)
         
         # Decoder with deep supervision
         aux_outputs = []
         for i, decoder_block in enumerate(self.decoder):
             skip = encoder_outputs[-(i + 2)]
-            x = decoder_block(x, skip)
+            if self.use_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(decoder_block, x, skip, use_reentrant=False)
+            else:
+                x = decoder_block(x, skip)
             x = self.dropout(x)
             
             # Auxiliary output
@@ -1240,7 +1251,8 @@ def run_cross_validation(rank=0, world_size=1):
             use_attention=USE_ATTENTION,
             attention_type=ATTENTION_TYPE,
             num_heads=NUM_ATTENTION_HEADS,
-            dropout=DROPOUT_RATE
+            dropout=DROPOUT_RATE,
+            use_checkpointing=USE_GRADIENT_CHECKPOINTING
         ).to(device)
         
         # Wrap model with DDP
