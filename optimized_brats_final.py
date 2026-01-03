@@ -159,6 +159,14 @@ EPSILON = 1e-8
 USE_WARMUP = True
 WARMUP_EPOCHS = 20  # Linear warmup from 0 to INITIAL_LR over 20 epochs
 
+# Gradient Clipping
+USE_GRADIENT_CLIPPING = True
+GRADIENT_CLIP_VALUE = 1.0  # Max gradient norm
+
+# Resume Training
+RESUME_TRAINING = False  # Set to True to resume from checkpoint
+RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
+
 # Class weights for loss (emphasize ET)
 CLASS_WEIGHTS = torch.tensor([0.0, 1.0, 1.0, 1.5])  # ET has higher weight
 
@@ -1112,6 +1120,11 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, accumul
         scaler.scale(loss).backward()
         
         if (batch_idx + 1) % accumulation_steps == 0:
+            # Gradient clipping - prevents gradient explosions
+            if USE_GRADIENT_CLIPPING:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRADIENT_CLIP_VALUE)
+            
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -1188,6 +1201,91 @@ def validate_epoch(model, val_loader, device, use_tta=False, rank=0):
     return np.mean(all_dice) if all_dice else 0.0, np.mean(all_hd95) if all_hd95 else 0.0
 
 # ============================================================================
+# CHECKPOINT MANAGEMENT
+# ============================================================================
+
+def save_checkpoint(model, optimizer, scheduler, scaler, epoch, val_dice, val_hd95, 
+                   fold_idx, checkpoint_path, is_best=False, rank=0):
+    """Save training checkpoint"""
+    if rank != 0:
+        return
+    
+    # Get model state dict (unwrap DDP if needed)
+    if USE_MULTI_GPU and hasattr(model, 'module'):
+        model_state = model.module.state_dict()
+    else:
+        model_state = model.state_dict()
+    
+    checkpoint = {
+        'epoch': epoch,
+        'fold': fold_idx,
+        'model_state_dict': model_state,
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if hasattr(scheduler, 'state_dict') else None,
+        'scaler_state_dict': scaler.state_dict(),
+        'val_dice': val_dice,
+        'val_hd95': val_hd95,
+        'best_val_dice': val_dice if is_best else None,
+    }
+    
+    torch.save(checkpoint, checkpoint_path)
+    
+    if is_best:
+        logger.info(f"✅ Best model saved (Dice: {val_dice:.4f})")
+    else:
+        logger.info(f"💾 Checkpoint saved (Epoch {epoch+1})")
+
+def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None, device='cuda'):
+    """Load training checkpoint"""
+    if not os.path.exists(checkpoint_path):
+        logger.warning(f"Checkpoint not found: {checkpoint_path}")
+        return 0, 0.0
+    
+    logger.info(f"Loading checkpoint from: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Load model state
+    if USE_MULTI_GPU and hasattr(model, 'module'):
+        model.module.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Load optimizer state
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        logger.info("✅ Optimizer state loaded")
+    
+    # Load scheduler state
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict'] is not None:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        logger.info("✅ Scheduler state loaded")
+    
+    # Load scaler state
+    if scaler is not None and 'scaler_state_dict' in checkpoint:
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        logger.info("✅ AMP scaler state loaded")
+    
+    start_epoch = checkpoint.get('epoch', 0) + 1
+    best_val_dice = checkpoint.get('best_val_dice', checkpoint.get('val_dice', 0.0))
+    
+    logger.info(f"✅ Resuming from epoch {start_epoch}, best Dice: {best_val_dice:.4f}")
+    
+    return start_epoch, best_val_dice
+
+def find_latest_checkpoint(fold_idx):
+    """Find the latest checkpoint for a given fold"""
+    checkpoint_pattern = os.path.join(MODEL_SAVE_DIR, f'fold_{fold_idx}_epoch_*.pth')
+    checkpoints = glob.glob(checkpoint_pattern)
+    
+    if not checkpoints:
+        return None
+    
+    # Sort by epoch number
+    checkpoints.sort(key=lambda x: int(x.split('_epoch_')[1].split('.pth')[0]))
+    
+    return checkpoints[-1]
+
+# ============================================================================
 # 3-FOLD CROSS-VALIDATION
 # ============================================================================
 
@@ -1229,6 +1327,8 @@ def run_cross_validation(rank=0, world_size=1):
         logger.info(f"  Epochs: {EPOCHS}")
         logger.info(f"  Learning Rate: {INITIAL_LR}")
         logger.info(f"  LR Warmup: {'Yes' if USE_WARMUP else 'No'}{f' ({WARMUP_EPOCHS} epochs)' if USE_WARMUP else ''}")
+        logger.info(f"  Gradient Clipping: {'Yes' if USE_GRADIENT_CLIPPING else 'No'}{f' (max_norm={GRADIENT_CLIP_VALUE})' if USE_GRADIENT_CLIPPING else ''}")
+        logger.info(f"  Resume Training: {'Yes' if RESUME_TRAINING else 'No'}")
         logger.info(f"  Device: {device}")
         logger.info(f"  Use TTA: {USE_TTA}")
         logger.info(f"  Use AMP: {USE_AMP}")
@@ -1382,16 +1482,43 @@ def run_cross_validation(rank=0, world_size=1):
         # AMP scaler
         scaler = GradScaler(enabled=USE_AMP)
         
+        # Resume training - load checkpoint if requested
+        start_epoch = 0
+        best_val_dice = 0.0
+        
+        if RESUME_TRAINING and rank == 0:
+            # Auto-detect checkpoint if path not specified
+            if RESUME_CHECKPOINT_PATH is None:
+                checkpoint_path = find_latest_checkpoint(fold_idx)
+                if checkpoint_path is None:
+                    logger.warning(f"No checkpoint found for fold {fold_idx}. Starting from scratch.")
+                else:
+                    start_epoch, best_val_dice = load_checkpoint(
+                        checkpoint_path, model, optimizer, scheduler, scaler, device
+                    )
+            else:
+                start_epoch, best_val_dice = load_checkpoint(
+                    RESUME_CHECKPOINT_PATH, model, optimizer, scheduler, scaler, device
+                )
+        
+        # Broadcast start_epoch and best_val_dice to all ranks
+        if USE_MULTI_GPU and world_size > 1:
+            start_epoch_tensor = torch.tensor([start_epoch], device=device)
+            best_val_dice_tensor = torch.tensor([best_val_dice], device=device)
+            dist.broadcast(start_epoch_tensor, src=0)
+            dist.broadcast(best_val_dice_tensor, src=0)
+            start_epoch = int(start_epoch_tensor.item())
+            best_val_dice = float(best_val_dice_tensor.item())
+        
         # TensorBoard (only on rank 0)
         if rank == 0:
             writer = SummaryWriter(os.path.join(TENSORBOARD_DIR, f'fold_{fold_idx}'))
         
         # Training
-        best_val_dice = 0.0
         patience_counter = 0
         best_model_path = os.path.join(MODEL_SAVE_DIR, f'fold_{fold_idx}_best.pth')
         
-        for epoch in range(EPOCHS):
+        for epoch in range(start_epoch, EPOCHS):
             epoch_start = time.time()
             
             # Set epoch for DDP sampler
@@ -1432,30 +1559,27 @@ def run_cross_validation(rank=0, world_size=1):
                 best_val_dice = val_dice
                 patience_counter = 0
                 
-                # Save from rank 0 only
-                if rank == 0:
-                    # Get model state dict (unwrap DDP if needed)
-                    if USE_MULTI_GPU and world_size > 1:
-                        model_state = model.module.state_dict()
-                    else:
-                        model_state = model.state_dict()
-                    
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model_state,
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'val_dice': val_dice,
-                        'val_hd95': val_hd95
-                    }, best_model_path)
-                    
-                    logger.info(f"✅ Best model saved (Dice: {val_dice:.4f})")
+                # Save best model
+                save_checkpoint(
+                    model, optimizer, scheduler, scaler, epoch, val_dice, val_hd95,
+                    fold_idx, best_model_path, is_best=True, rank=rank
+                )
             else:
                 patience_counter += 1
-                if patience_counter % 10 == 0:
+                if patience_counter % 10 == 0 and rank == 0:
                     logger.info(f"No improvement. Patience: {patience_counter}/{PATIENCE}")
             
+            # Save periodic checkpoint every 25 epochs
+            if rank == 0 and (epoch + 1) % 25 == 0:
+                checkpoint_path = os.path.join(MODEL_SAVE_DIR, f'fold_{fold_idx}_epoch_{epoch+1}.pth')
+                save_checkpoint(
+                    model, optimizer, scheduler, scaler, epoch, val_dice, val_hd95,
+                    fold_idx, checkpoint_path, is_best=False, rank=rank
+                )
+            
             if patience_counter >= PATIENCE:
-                logger.info(f"Early stopping after {epoch + 1} epochs")
+                if rank == 0:
+                    logger.info(f"Early stopping after {epoch + 1} epochs")
                 break
             
             gc.collect()
