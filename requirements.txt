@@ -1,25 +1,28 @@
-# BraTS 3D Segmentation - Requirements
-# Python 3.8+ required
+# =============================================================================
+# BraTS 3D Brain Tumor Segmentation - Requirements
+# Optimized for RunPod: 4x A100 80GB
+# Python 3.10+ required
+# =============================================================================
 
-# Deep Learning Framework
-torch>=2.0.0
-torchvision>=0.15.0
-torchaudio>=2.0.0
+# Deep Learning Framework (CUDA 11.8)
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch>=2.1.0
+torchvision>=0.16.0
 
 # Medical Imaging
-SimpleITK>=2.3.0  # Fast NIfTI loading with better multiprocessing support
+SimpleITK>=2.3.0
 
 # Scientific Computing
 numpy>=1.24.0
 scipy>=1.10.0
-scikit-learn>=1.2.0
+scikit-learn>=1.3.0
 pandas>=2.0.0
 
 # Visualization & Monitoring
 matplotlib>=3.7.0
-tensorboard>=2.12.0
+tensorboard>=2.14.0
 tqdm>=4.65.0
 
-# Optional but recommended
-# For better performance on CUDA 11.8:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Azure Storage (for dataset download)
+azure-storage-blob>=12.19.0
+python-dotenv>=1.0.0
