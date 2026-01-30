@@ -12,32 +12,38 @@ Target: **90-95% Dice Score**
 ```
 BraTS_Optimized_Solution/
 ├── README.md                      # This file
-├── requirements.txt               # Python dependencies
-├── train.py                       # Main training script (renamed from optimized_brats_final.py)
+├── requirements.txt               # Training dependencies
+├── requirements_backend.txt       # Inference API dependencies
+├── train.py                       # Main training script
 ├── download_from_azure.py         # Download dataset from Azure Blob Storage
 ├── redownload_corrupted_files.py  # Fix corrupted/incomplete downloads
 ├── .env.example                   # Template for environment variables
-├── .env                           # Your Azure credentials (DO NOT COMMIT)
-└── .gitignore                     # Git ignore rules
+│
+├── # INFERENCE PIPELINE
+├── api_server.py                  # FastAPI backend server
+├── inference.py                   # Model inference with TTA
+├── visualize_3d.py                # 3D mesh generation (marching cubes)
+├── report_generator.py            # Clinical report generation (HTML/PDF)
+│
+└── ui_design/                     # Frontend application
+    └── brats-viewer-ui/           # Next.js + Three.js viewer
+        ├── src/
+        │   ├── app/               # Pages (upload, viewer)
+        │   ├── components/        # React components (BrainViewer)
+        │   └── services/          # API client
+        └── package.json
 
-# Created at runtime on RunPod:
+# Created at runtime:
 /workspace/
-├── dataset/                       # BraTS dataset (downloaded from Azure)
-│   ├── BraTS2021_00000/
-│   │   ├── BraTS2021_00000_t1.nii.gz
-│   │   ├── BraTS2021_00000_t1ce.nii.gz
-│   │   ├── BraTS2021_00000_t2.nii.gz
-│   │   ├── BraTS2021_00000_flair.nii.gz
-│   │   └── BraTS2021_00000_seg.nii.gz
-│   └── ...
-├── outputs/                       # Training logs and metrics
+├── dataset/                       # BraTS dataset
+├── outputs/                       # Training logs
 ├── checkpoints/                   # Model checkpoints
-└── tensorboard/                   # TensorBoard logs
+└── sessions/                      # Inference session data
 ```
 
 ---
 
-## 🚀 Quick Start (RunPod)
+## 🚀 Quick Start (RunPod Training)
 
 ### 1. Launch RunPod Instance
 
@@ -83,6 +89,65 @@ python download_from_azure.py --output-dir /workspace/dataset
 # Multi-GPU training with 4x A100
 python train.py
 ```
+
+---
+
+## 🧠 Inference Pipeline (3D Visualization)
+
+### Overview
+
+After training, use the inference pipeline to:
+1. **Analyze MRI scans** with the trained model
+2. **Generate 3D meshes** with transparent brain surface and colored tumors
+3. **Create clinical reports** with tumor volumes and grade estimates
+4. **View in browser** using Three.js interactive viewer
+
+### Tumor Visualization Colors
+
+| Class | Name | Color | Description |
+|-------|------|-------|-------------|
+| NCR | Necrotic Core | 🔴 Dark Red (#8B0000) | Central necrotic region |
+| ED | Edema | 🟡 Yellow (#FFD700) | Peritumoral swelling |
+| ET | Enhancing Tumor | 🔴 Bright Red (#FF0000) | Active tumor tissue |
+| Brain | Surface | ⚪ Transparent White | Brain surface mesh |
+
+### Run Inference Backend
+
+```bash
+# Install backend dependencies
+pip install -r requirements_backend.txt
+
+# Start FastAPI server
+python api_server.py --checkpoint /workspace/checkpoints/fold_0_best.pth --port 8000
+```
+
+API Endpoints:
+- `POST /api/session/create` - Create new session
+- `POST /api/upload/{session_id}` - Upload MRI files
+- `POST /api/predict/{session_id}` - Start inference
+- `GET /api/status/{session_id}` - Check progress
+- `GET /api/mesh/{session_id}` - Get 3D mesh data
+- `GET /api/report/{session_id}` - Get clinical report
+- `GET /api/download/report/{session_id}` - Download PDF report
+- `GET /api/download/gltf/{session_id}` - Download GLTF for AR
+
+### Run Frontend
+
+```bash
+cd ui_design/brats-viewer-ui
+
+# Install dependencies
+npm install
+
+# Create environment file
+cp .env.local.example .env.local
+# Edit .env.local to set API URL
+
+# Start development server
+npm run dev
+```
+
+Access at: `http://localhost:3000`
 
 ---
 

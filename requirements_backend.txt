@@ -1,0 +1,39 @@
+# =============================================================================
+# BACKEND REQUIREMENTS
+# 
+# Dependencies for the inference API server
+# Install with: pip install -r requirements_backend.txt
+# =============================================================================
+
+# Core Framework
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# Medical Imaging
+SimpleITK==2.3.1
+nibabel==5.2.0
+
+# 3D Mesh Generation
+scikit-image==0.22.0
+scipy==1.12.0
+numpy==1.26.4
+
+# PDF Report Generation
+reportlab==4.1.0
+
+# GLTF Export (optional, for advanced mesh processing)
+trimesh==4.1.4
+pyglet<2.0
+
+# Deep Learning (should match training environment)
+torch==2.1.0+cu118
+torchvision==0.16.0+cu118
+
+# Utilities
+python-dotenv==1.0.1
+aiofiles==23.2.1
+pydantic==2.6.1
+
+# CORS Support (included in fastapi)
+# starlette (comes with fastapi)
