@@ -1,0 +1,207 @@
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import { 
+    Box, 
+    Button, 
+    TextField, 
+    Typography, 
+    Container, 
+    Paper, 
+    LinearProgress,
+    Alert,
+    Snackbar
+} from '@mui/material';
+import ScienceIcon from '@mui/icons-material/Science';
+import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import { useRouter } from 'next/navigation';
+import FileUploadZone from '@/components/FileUploadZone';
+import { apiService, StatusResponse } from '@/services/api';
+export const dynamic = 'force-dynamic';
+
+interface PatientDetails {
+    name: string;
+    age: string;
+    weight: string;
+    height: string;
+    gender: string;
+    disorder: string;
+    description: string;
+}
+
+export default function UploadPage() {
+    const [patientDetails, setPatientDetails] = useState<PatientDetails>({
+        name: '',
+        age: '',
+        weight: '',
+        height: '',
+        gender: '',
+        disorder: '',
+        description: ''
+    });
+    const [files, setFiles] = useState<File[]>([]);
+    const [sessionId, setSessionId] = useState<string | null>(null);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [statusMessage, setStatusMessage] = useState('');
+    const [error, setError] = useState<string | null>(null);
+    const [showError, setShowError] = useState(false);
+    const router = useRouter();
+
+    // Doctor info from previous page
+    const [doctorInfo, setDoctorInfo] = useState({
+        name: '',
+        department: 'Neuro-Oncology',
+        credentials: 'M.D.'
+    });
+
+    useEffect(() => {
+        const savedDoctor = localStorage.getItem('doctorInfo');
+        if (savedDoctor) {
+            try {
+                setDoctorInfo(JSON.parse(savedDoctor));
+            } catch (e) {
+                console.error('Failed to load doctor info:', e);
+            }
+        }
+    }, []);
+
+    const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const { name, value } = event.target;
+        setPatientDetails(prev => ({ ...prev, [name]: value }));
+    };
+
+    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (event.target.files) {
+            const newFiles = Array.from(event.target.files);
+            const niftiFiles = newFiles.filter(f => 
+                f.name.endsWith('.nii') || f.name.endsWith('.nii.gz')
+            );
+            setFiles(niftiFiles);
+            
+            if (niftiFiles.length !== newFiles.length) {
+                setError('Some files were filtered out. Only .nii and .nii.gz files are accepted.');
+                setShowError(true);
+            }
+        }
+    };
+
+    const handleProcess = async () => {
+        if (files.length === 0) {
+            setError('Please upload MRI scan files first.');
+            setShowError(true);
+            return;
+        }
+
+        setIsProcessing(true);
+        setProgress(0);
+        setError(null);
+
+        try {
+            setStatusMessage('Creating session...');
+            setProgress(5);
+            const session = await apiService.createSession();
+            setSessionId(session.session_id);
+            localStorage.setItem('currentSessionId', session.session_id);
+            localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
+
+            setStatusMessage('Uploading MRI scans...');
+            setProgress(15);
+            await apiService.uploadFiles(session.session_id, files);
+
+            setStatusMessage('Starting AI analysis...');
+            setProgress(25);
+            await apiService.startPrediction(
+                session.session_id,
+                {
+                    name: patientDetails.name || 'Anonymous',
+                    id: `PAT-${Date.now()}`,
+                    age: patientDetails.age || 'N/A',
+                    gender: patientDetails.gender || 'N/A',
+                },
+                doctorInfo
+            );
+
+            setStatusMessage('Processing MRI scans with AI...');
+            await apiService.pollStatus(
+                session.session_id,
+                (status: StatusResponse) => {
+                    setProgress(25 + (status.progress * 0.7));
+                    setStatusMessage(status.message);
+                },
+                2000
+            );
+
+            setProgress(100);
+            setStatusMessage('Analysis complete! Redirecting...');
+            setTimeout(() => {
+                router.push(`/viewer?session=${session.session_id}`);
+            }, 500);
+
+        } catch (err) {
+            console.error('Processing error:', err);
+            setError(err instanceof Error ? err.message : 'An error occurred during processing');
+            setShowError(true);
+            setIsProcessing(false);
+        }
+    };
+
+    const handleCloseError = () => {
+        setShowError(false);
+    };
+
+    return (
+        <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+            {isProcessing && (
+                <Box sx={{ mb: 3 }}>
+                    <Paper sx={{ p: 2, borderRadius: 2, background: 'linear-gradient(135deg, rgba(44, 90, 160, 0.1) 0%, rgba(30, 61, 110, 0.1) 100%)' }}>
+                        <Typography variant="body2" color="text.secondary" gutterBottom>{statusMessage}</Typography>
+                        <LinearProgress variant="determinate" value={progress} sx={{ height: 10, borderRadius: 5, '& .MuiLinearProgress-bar': { background: 'linear-gradient(90deg, #2c5aa0 0%, #4CAF50 100%)' } }} />
+                        <Typography variant="caption" sx={{ mt: 1, display: 'block', textAlign: 'right' }}>{Math.round(progress)}%</Typography>
+                    </Paper>
+                </Box>
+            )}
+
+            <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 3 }}>
+                <Box sx={{ width: { xs: '100%', md: '33.33%' } }}>
+                    <Paper elevation={3} sx={{ p: 3, height: '100%', borderRadius: 2, border: '2px solid', borderColor: 'primary.main', boxShadow: (theme) => `0 0 12px ${theme.palette.primary.main}`, opacity: isProcessing ? 0.7 : 1, pointerEvents: isProcessing ? 'none' : 'auto' }}>
+                        <Typography variant="h6" gutterBottom sx={{ color: 'primary.main' }}>Patient Parameters</Typography>
+                        <TextField name="name" label="Patient Name" fullWidth margin="normal" onChange={handleInputChange} value={patientDetails.name} size="small" />
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <TextField name="age" label="Age" fullWidth margin="normal" onChange={handleInputChange} value={patientDetails.age} size="small" type="number" />
+                            <TextField name="gender" label="Gender" fullWidth margin="normal" onChange={handleInputChange} value={patientDetails.gender} size="small" />
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <TextField name="weight" label="Weight (kg)" fullWidth margin="normal" onChange={handleInputChange} value={patientDetails.weight} size="small" type="number" />
+                            <TextField name="height" label="Height (cm)" fullWidth margin="normal" onChange={handleInputChange} value={patientDetails.height} size="small" type="number" />
+                        </Box>
+                        <TextField name="disorder" label="Type of Disorder" fullWidth margin="normal" onChange={handleInputChange} value={patientDetails.disorder} size="small" />
+                        <TextField name="description" label="Additional Notes" fullWidth margin="normal" multiline rows={4} onChange={handleInputChange} value={patientDetails.description} />
+                    </Paper>
+                </Box>
+                <Box sx={{ width: { xs: '100%', md: '66.67%' } }}>
+                    <Paper elevation={3} sx={{ p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', borderRadius: 2, border: '2px solid', borderColor: 'primary.main', boxShadow: (theme) => `0 0 12px ${theme.palette.primary.main}`, opacity: isProcessing ? 0.7 : 1, pointerEvents: isProcessing ? 'none' : 'auto' }}>
+                        <Typography variant="h6" gutterBottom sx={{ color: 'primary.main' }}><CloudUploadIcon sx={{ mr: 1, verticalAlign: 'middle' }} />Upload MRI Scans</Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, textAlign: 'center' }}>Upload the 4 MRI modalities: T1, T1ce, T2, and FLAIR<br />Supported formats: .nii, .nii.gz</Typography>
+                        <FileUploadZone onFileSelect={handleFileSelect} fileCount={files.length} />
+                        {files.length > 0 && (
+                            <Box sx={{ mt: 2, width: '100%', maxHeight: 150, overflow: 'auto' }}>
+                                <Typography variant="subtitle2" gutterBottom>Selected files ({files.length}):</Typography>
+                                {files.map((file, index) => (
+                                    <Typography key={index} variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>• {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)</Typography>
+                                ))}
+                            </Box>
+                        )}
+                        <Button variant="contained" size="large" startIcon={isProcessing ? null : <ScienceIcon />} sx={{ mt: 4, width: '50%', py: 1.5, background: 'linear-gradient(45deg, #2c5aa0 30%, #4CAF50 90%)', '&:hover': { background: 'linear-gradient(45deg, #1e3d6e 30%, #388E3C 90%)' } }} onClick={handleProcess} disabled={files.length === 0 || isProcessing}>
+                            {isProcessing ? 'Processing...' : 'Analyze with AI'}
+                        </Button>
+                    </Paper>
+                </Box>
+            </Box>
+
+            <Snackbar open={showError} autoHideDuration={6000} onClose={handleCloseError} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+                <Alert onClose={handleCloseError} severity="error" sx={{ width: '100%' }}>{error}</Alert>
+            </Snackbar>
+        </Container>
+    );
+}

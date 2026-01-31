@@ -1,0 +1,12 @@
+/* src/app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.glass-morphism {
+  background: rgba(10, 25, 41, 0.6); /* Semi-transparent dark blue */
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px); /* For Safari */
+  border: 1px solid rgba(0, 245, 255, 0.2); /* Subtle neon border */
+  border-radius: 16px;
+}
