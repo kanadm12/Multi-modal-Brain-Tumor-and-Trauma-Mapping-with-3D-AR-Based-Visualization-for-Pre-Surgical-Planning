@@ -132,28 +132,29 @@ TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard")
 USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
 NUM_WORKERS = 8  # Workers per DataLoader - RunPod has good CPUs
 
-# Input/Output Configuration - Larger size for A100 80GB
-CROP_SIZE = (192, 224, 192)  # Maximum size for A100 80GB
+# Input/Output Configuration - Optimized for MI300X 192GB
+CROP_SIZE = (224, 256, 224)  # Larger input size for MI300X 192GB VRAM
 NUM_CLASSES = 4  # Background + NCR + ED + ET
 IN_CHANNELS = 4  # T1, T1c, T2, FLAIR
 N_FOLDS = 3  # 3-fold cross-validation
 
-# Model Architecture - OPTIMIZED FOR 4x A100 80GB
-MODEL_FILTERS = [64, 128, 256, 512, 1024]  # Maximum capacity for A100 80GB
+# Model Architecture - OPTIMIZED FOR 4x MI300X 192GB (AMD ROCm)
+MODEL_FILTERS = [64, 128, 256, 512, 1024]  # Large capacity - MI300X handles this easily
 USE_ATTENTION = True
 ATTENTION_TYPE = 'transformer'  # 'transformer' or 'lightweight'
 NUM_ATTENTION_HEADS = 8
-TRANSFORMER_DEPTH = 3  # A100 80GB can handle depth 3
-DROPOUT_RATE = 0.15  # Reduced from 0.2 - prevents underfitting
-USE_GRADIENT_CHECKPOINTING = False  # A100 80GB has enough memory
+TRANSFORMER_DEPTH = 4  # MI300X 192GB can handle depth 4 (increased from 3)
+DROPOUT_RATE = 0.12  # Slightly reduced for larger batch sizes
+USE_GRADIENT_CHECKPOINTING = False  # MI300X 192GB has plenty of memory
 
-# Training Hyperparameters - OPTIMIZED FOR 4x A100 80GB
-BATCH_SIZE = 4  # Per GPU (4 GPUs = 16 total batch size)
-ACCUMULATION_STEPS = 2  # Effective batch size = 32 (4 x 4 x 2)
-EPOCHS = 500
-INITIAL_LR = 2e-4  # Slightly higher LR for larger effective batch
+# Training Hyperparameters - OPTIMIZED FOR 4x MI300X 192GB
+# MI300X has 2.4x more VRAM than A100 80GB - leverage it!
+BATCH_SIZE = 8  # Per GPU (4 GPUs = 32 total batch size) - doubled from A100
+ACCUMULATION_STEPS = 2  # Effective batch size = 64 (8 x 4 x 2)
+EPOCHS = 300  # Reduced from 500 - early stopping will handle convergence
+INITIAL_LR = 3e-4  # Higher LR for larger effective batch size (sqrt scaling)
 WEIGHT_DECAY = 1e-5  # Reduced - prevents over-regularization
-PATIENCE = 100  # Increased patience for better convergence
+PATIENCE = 75  # Balanced patience for faster convergence
 EPSILON = 1e-8
 
 # Learning Rate Warmup
@@ -204,9 +205,10 @@ OHEM_RATIO = 0.7  # Keep 70% hardest pixels in loss
 # Label Smoothing for better calibration
 LABEL_SMOOTHING = 0.1
 
-# Multi-GPU Settings - 4x A100 80GB on RunPod
-USE_MULTI_GPU = True  # Enabled for 4x A100 cluster
-WORLD_SIZE = 4  # 4x A100 80GB GPUs
+# Multi-GPU Settings - 4x MI300X 192GB on RunPod (AMD ROCm)
+USE_MULTI_GPU = True  # Enabled for 4x MI300X cluster
+WORLD_SIZE = 4  # 4x MI300X 192GB GPUs
+GPU_TYPE = "MI300X"  # AMD Instinct MI300X (ROCm)
 
 # Device (will be set per process in DDP)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -401,13 +403,26 @@ def augment_data(img, seg, prob=0.90):
 # METRICS AND LOSS FUNCTIONS
 # ============================================================================
 
-def dice_coefficient(pred, target, smooth=1e-6):
-    """Calculate Dice coefficient per class"""
+def dice_coefficient(pred, target, smooth=1e-6, return_per_class=False):
+    """Calculate Dice coefficient per class
+    
+    Args:
+        pred: Predicted segmentation
+        target: Ground truth segmentation
+        smooth: Smoothing factor
+        return_per_class: If True, returns dict with per-class scores + mean
+    
+    Returns:
+        Mean dice score, or dict with per-class and mean if return_per_class=True
+    """
     pred = pred.float()
     target = target.float()
     
     dice_scores = []
-    for c in range(1, NUM_CLASSES):
+    class_names = ['NCR', 'ED', 'ET']  # Classes 1, 2, 3
+    per_class = {}
+    
+    for i, c in enumerate(range(1, NUM_CLASSES)):
         pred_c = (pred == c).float().view(-1)
         target_c = (target == c).float().view(-1)
         
@@ -416,8 +431,13 @@ def dice_coefficient(pred, target, smooth=1e-6):
         
         dice = (2.0 * intersection + smooth) / (denominator + smooth)
         dice_scores.append(dice.item())
+        per_class[class_names[i]] = dice.item()
     
-    return np.mean(dice_scores)
+    mean_dice = np.mean(dice_scores)
+    
+    if return_per_class:
+        return {'mean': mean_dice, **per_class}
+    return mean_dice
 
 def hausdorff_95(pred, target, spacing=(1, 1, 1)):
     """Calculate 95th percentile Hausdorff distance"""
@@ -744,7 +764,7 @@ class CombinedLoss(nn.Module):
         """Update epoch for dynamic loss weighting"""
         self.epoch = epoch
     
-    def forward(self, pred, target):
+    def forward(self, pred, target, return_components=False):
         dice = self.dice_loss(pred, target)
         boundary = self.boundary_loss(pred, target)
         tversky = self.focal_tversky_loss(pred, target)
@@ -756,16 +776,27 @@ class CombinedLoss(nn.Module):
         # Late: focus on boundary refinement
         if self.epoch < 50:
             boundary_factor = 0.5  # Reduced boundary focus early
-        elif self.epoch < 200:
+        elif self.epoch < 150:
             boundary_factor = 1.0  # Normal
         else:
             boundary_factor = 1.5  # Increased boundary focus late for HD95
         
-        return (self.dice_weight * dice + 
-                self.boundary_weight * boundary_factor * boundary +
-                self.tversky_weight * tversky +
-                self.lovasz_weight * lovasz + 
-                self.ce_weight * ce)
+        total_loss = (self.dice_weight * dice + 
+                      self.boundary_weight * boundary_factor * boundary +
+                      self.tversky_weight * tversky +
+                      self.lovasz_weight * lovasz + 
+                      self.ce_weight * ce)
+        
+        if return_components:
+            return total_loss, {
+                'dice': dice.item() if torch.is_tensor(dice) else dice,
+                'boundary': boundary.item() if torch.is_tensor(boundary) else boundary,
+                'tversky': tversky.item() if torch.is_tensor(tversky) else tversky,
+                'lovasz': lovasz.item() if torch.is_tensor(lovasz) else lovasz,
+                'ce': ce.item() if torch.is_tensor(ce) else ce,
+                'boundary_factor': boundary_factor
+            }
+        return total_loss
 
 # ============================================================================
 # ATTENTION MODULES
@@ -1446,10 +1477,17 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, accumul
     - OHEM: Focuses on hard examples for better learning
     - Dynamic loss epoch updating for adaptive boundary weight
     - Improved deep supervision weighting
+    - Returns individual loss components for TensorBoard logging
     """
     model.train()
     total_loss = 0.0
     num_batches = 0
+    
+    # Accumulators for individual loss components
+    loss_components_sum = {
+        'dice': 0.0, 'boundary': 0.0, 'tversky': 0.0, 
+        'lovasz': 0.0, 'ce': 0.0, 'boundary_factor': 0.0
+    }
     
     # Update loss function epoch for dynamic weighting
     if hasattr(loss_fn, 'set_epoch'):
@@ -1470,8 +1508,13 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, accumul
         with autocast(enabled=USE_AMP):
             outputs, aux_outputs = model(images)
             
-            # Main loss
-            loss = loss_fn(outputs, targets)
+            # Main loss with components for logging
+            loss, components = loss_fn(outputs, targets, return_components=True)
+            
+            # Accumulate loss components for logging
+            for key in loss_components_sum:
+                if key in components:
+                    loss_components_sum[key] += components[key]
             
             # Deep supervision with decreasing weights
             # Higher resolution outputs get less weight (they're noisier)
@@ -1501,13 +1544,37 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, accumul
         if rank == 0:
             pbar.set_postfix({'loss': f'{total_loss / num_batches:.4f}'})
     
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    # Average loss components
+    if num_batches > 0:
+        for key in loss_components_sum:
+            loss_components_sum[key] /= num_batches
+    
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    return avg_loss, loss_components_sum
 
-def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=True, rank=0):
-    """Validate for one epoch"""
+def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=True, rank=0, return_per_class=False):
+    """Validate for one epoch with optional per-class metrics
+    
+    Args:
+        model: The model to validate
+        val_loader: Validation data loader
+        device: Device to run on
+        use_tta: Whether to use test-time augmentation
+        use_postprocessing: Whether to apply post-processing
+        rank: GPU rank for DDP
+        return_per_class: If True, return per-class Dice and HD95 scores
+    
+    Returns:
+        If return_per_class=False: (mean_dice, mean_hd95)
+        If return_per_class=True: (mean_dice, mean_hd95, per_class_dice, per_class_hd95)
+    """
     model.eval()
     all_dice = []
     all_hd95 = []
+    
+    # Per-class accumulators
+    per_class_dice = {'NCR': [], 'ED': [], 'ET': []}
+    per_class_hd95 = {'NCR': [], 'ED': [], 'ET': []}
     
     with torch.no_grad():
         # Only show progress bar on rank 0
@@ -1552,11 +1619,22 @@ def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=
                 pred_b = pred[b].squeeze()
                 target_b = targets[b]
                 
-                dice = dice_coefficient(pred_b, target_b)
-                all_dice.append(dice)
+                # Get per-class dice scores
+                dice_result = dice_coefficient(pred_b, target_b, return_per_class=True)
+                all_dice.append(dice_result['mean'])
                 
+                # Store per-class dice
+                for class_name in ['NCR', 'ED', 'ET']:
+                    per_class_dice[class_name].append(dice_result[class_name])
+                
+                # Get per-class HD95
                 hd95 = hausdorff_95(pred_b, target_b)
                 all_hd95.append(np.mean(hd95))
+                
+                # Store per-class HD95 (NCR=0, ED=1, ET=2 in hd95 array)
+                per_class_hd95['NCR'].append(hd95[0])
+                per_class_hd95['ED'].append(hd95[1])
+                per_class_hd95['ET'].append(hd95[2])
             
             if all_dice and rank == 0:
                 pbar.set_postfix({
@@ -1564,7 +1642,16 @@ def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=
                     'HD95': f'{np.mean(all_hd95):.2f}'
                 })
     
-    return np.mean(all_dice) if all_dice else 0.0, np.mean(all_hd95) if all_hd95 else 0.0
+    mean_dice = np.mean(all_dice) if all_dice else 0.0
+    mean_hd95 = np.mean(all_hd95) if all_hd95 else 0.0
+    
+    if return_per_class:
+        # Average per-class metrics
+        avg_per_class_dice = {k: np.mean(v) if v else 0.0 for k, v in per_class_dice.items()}
+        avg_per_class_hd95 = {k: np.mean(v) if v else 0.0 for k, v in per_class_hd95.items()}
+        return mean_dice, mean_hd95, avg_per_class_dice, avg_per_class_hd95
+    
+    return mean_dice, mean_hd95
 
 # ============================================================================
 # CHECKPOINT MANAGEMENT
@@ -1685,23 +1772,34 @@ def run_cross_validation(rank=0, world_size=1):
         logger.info("=" * 80)
         logger.info("STARTING 3-FOLD CROSS-VALIDATION")
         logger.info("=" * 80)
+        logger.info(f"Hardware Configuration:")
+        logger.info(f"  GPU Type: {GPU_TYPE} (AMD ROCm)")
+        logger.info(f"  Multi-GPU: {USE_MULTI_GPU} ({world_size} GPUs x 192GB = {world_size * 192}GB total VRAM)")
+        logger.info(f"  Device: {device}")
         logger.info(f"Model Configuration:")
         logger.info(f"  Input Size: {CROP_SIZE}")
         logger.info(f"  Filters: {MODEL_FILTERS}")
-        logger.info(f"  Multi-GPU: {USE_MULTI_GPU} ({world_size} GPUs)")
-        logger.info(f"  Batch Size: {BATCH_SIZE} x {ACCUMULATION_STEPS} x {world_size} = {BATCH_SIZE * ACCUMULATION_STEPS * world_size}")
-        logger.info(f"  Epochs: {EPOCHS}")
+        logger.info(f"  Transformer Depth: {TRANSFORMER_DEPTH}")
+        logger.info(f"  Attention Heads: {NUM_ATTENTION_HEADS}")
+        logger.info(f"Training Configuration:")
+        logger.info(f"  Batch Size: {BATCH_SIZE} x {ACCUMULATION_STEPS} x {world_size} = {BATCH_SIZE * ACCUMULATION_STEPS * world_size} (effective)")
+        logger.info(f"  Epochs: {EPOCHS} (max)")
         logger.info(f"  Learning Rate: {INITIAL_LR}")
         logger.info(f"  LR Warmup: {'Yes' if USE_WARMUP else 'No'}{f' ({WARMUP_EPOCHS} epochs)' if USE_WARMUP else ''}")
         logger.info(f"  Gradient Clipping: {'Yes' if USE_GRADIENT_CLIPPING else 'No'}{f' (max_norm={GRADIENT_CLIP_VALUE})' if USE_GRADIENT_CLIPPING else ''}")
+        logger.info(f"  Early Stopping Patience: {PATIENCE}")
         logger.info(f"  Resume Training: {'Yes' if RESUME_TRAINING else 'No'}")
-        logger.info(f"  Device: {device}")
-        logger.info(f"  Use TTA: {USE_TTA}")
+        logger.info(f"  Use TTA: {USE_TTA} ({TTA_TRANSFORMS} transforms)")
         logger.info(f"  Use AMP: {USE_AMP}")
+        logger.info(f"Loss Configuration:")
+        logger.info(f"  Dice: {LOSS_DICE_WEIGHT}, Boundary: {LOSS_BOUNDARY_WEIGHT}, Tversky: {LOSS_TVERSKY_WEIGHT}, Lovasz: {LOSS_LOVASZ_WEIGHT}, CE: {LOSS_CE_WEIGHT}")
         logger.info(f"Data Loading Configuration:")
         logger.info(f"  Preprocessed Data: {'Yes' if USE_PREPROCESSED else 'No (loading raw NIfTI)'}")
         logger.info(f"  DataLoader Workers: {NUM_WORKERS}")
         logger.info(f"  Multiprocessing Method: {'spawn (safe for NIfTI)' if not USE_PREPROCESSED else 'default'}")
+        logger.info(f"TensorBoard Logging:")
+        logger.info(f"  Directory: {TENSORBOARD_DIR}")
+        logger.info(f"  Metrics: Losses (all components), Dice (mean + per-class), HD95 (mean + per-class), LR")
         logger.info(f"=" * 80)
     
     # Get patient IDs
@@ -1893,24 +1991,41 @@ def run_cross_validation(rank=0, world_size=1):
             if USE_MULTI_GPU and world_size > 1:
                 train_loader.sampler.set_epoch(epoch)
             
-            # Train with epoch passed for dynamic loss weighting
-            train_loss = train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, ACCUMULATION_STEPS, rank, epoch)
+            # Train with epoch passed for dynamic loss weighting - now returns loss components
+            train_loss, loss_components = train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, ACCUMULATION_STEPS, rank, epoch)
             
             # Validate on ALL GPUs in parallel (4x faster than single GPU)
-            # Disable post-processing during training for speed (use for final test only)
-            val_dice, val_hd95 = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank)
+            # Get per-class metrics for comprehensive TensorBoard logging
+            val_result = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank, return_per_class=True)
+            val_dice, val_hd95, per_class_dice, per_class_hd95 = val_result
             
             # Aggregate validation metrics across all ranks
             if USE_MULTI_GPU and world_size > 1:
                 val_dice_tensor = torch.tensor([val_dice], device=device)
                 val_hd95_tensor = torch.tensor([val_hd95], device=device)
                 
+                # Per-class tensors for aggregation
+                ncr_dice_tensor = torch.tensor([per_class_dice['NCR']], device=device)
+                ed_dice_tensor = torch.tensor([per_class_dice['ED']], device=device)
+                et_dice_tensor = torch.tensor([per_class_dice['ET']], device=device)
+                ncr_hd95_tensor = torch.tensor([per_class_hd95['NCR']], device=device)
+                ed_hd95_tensor = torch.tensor([per_class_hd95['ED']], device=device)
+                et_hd95_tensor = torch.tensor([per_class_hd95['ET']], device=device)
+                
                 # All-reduce to average metrics across GPUs
                 dist.all_reduce(val_dice_tensor, op=dist.ReduceOp.AVG)
                 dist.all_reduce(val_hd95_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(ncr_dice_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(ed_dice_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(et_dice_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(ncr_hd95_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(ed_hd95_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(et_hd95_tensor, op=dist.ReduceOp.AVG)
                 
                 val_dice = val_dice_tensor.item()
                 val_hd95 = val_hd95_tensor.item()
+                per_class_dice = {'NCR': ncr_dice_tensor.item(), 'ED': ed_dice_tensor.item(), 'ET': et_dice_tensor.item()}
+                per_class_hd95 = {'NCR': ncr_hd95_tensor.item(), 'ED': ed_hd95_tensor.item(), 'ET': et_hd95_tensor.item()}
             
             # Step scheduler (handles both warmup and plateau)
             if USE_WARMUP:
@@ -1919,14 +2034,70 @@ def run_cross_validation(rank=0, world_size=1):
                 scheduler.step(val_dice)
             
             epoch_time = time.time() - epoch_start
+            current_lr = optimizer.param_groups[0]['lr']
             
             if rank == 0:
-                logger.info(f"E{epoch+1:3d} | Loss: {train_loss:.4f} | Val Dice: {val_dice:.4f} | HD95: {val_hd95:.2f} | Time: {epoch_time:.1f}s")
+                # Console logging with per-class details
+                logger.info(f"E{epoch+1:3d} | Loss: {train_loss:.4f} | Val Dice: {val_dice:.4f} (NCR:{per_class_dice['NCR']:.3f} ED:{per_class_dice['ED']:.3f} ET:{per_class_dice['ET']:.3f}) | HD95: {val_hd95:.2f} | LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
                 
-                writer.add_scalar('Loss/train', train_loss, epoch)
-                writer.add_scalar('Metrics/val_dice', val_dice, epoch)
-                writer.add_scalar('Metrics/val_hd95', val_hd95, epoch)
-                writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
+                # ============================================================
+                # COMPREHENSIVE TENSORBOARD LOGGING
+                # ============================================================
+                
+                # 1. Training Losses - Total and per-component
+                writer.add_scalar('Loss/total', train_loss, epoch)
+                writer.add_scalar('Loss/dice', loss_components['dice'], epoch)
+                writer.add_scalar('Loss/boundary', loss_components['boundary'], epoch)
+                writer.add_scalar('Loss/tversky', loss_components['tversky'], epoch)
+                writer.add_scalar('Loss/lovasz', loss_components['lovasz'], epoch)
+                writer.add_scalar('Loss/ce', loss_components['ce'], epoch)
+                writer.add_scalar('Loss/boundary_factor', loss_components['boundary_factor'], epoch)
+                
+                # 2. Validation Dice Scores - Mean and per-class
+                writer.add_scalar('Dice/mean', val_dice, epoch)
+                writer.add_scalar('Dice/NCR', per_class_dice['NCR'], epoch)
+                writer.add_scalar('Dice/ED', per_class_dice['ED'], epoch)
+                writer.add_scalar('Dice/ET', per_class_dice['ET'], epoch)
+                
+                # 3. Validation HD95 Scores - Mean and per-class
+                writer.add_scalar('HD95/mean', val_hd95, epoch)
+                writer.add_scalar('HD95/NCR', per_class_hd95['NCR'], epoch)
+                writer.add_scalar('HD95/ED', per_class_hd95['ED'], epoch)
+                writer.add_scalar('HD95/ET', per_class_hd95['ET'], epoch)
+                
+                # 4. Learning Rate
+                writer.add_scalar('Training/learning_rate', current_lr, epoch)
+                writer.add_scalar('Training/epoch_time_sec', epoch_time, epoch)
+                
+                # 5. Best metrics tracking
+                writer.add_scalar('Best/val_dice', best_val_dice, epoch)
+                
+                # 6. Grouped scalars for easy comparison
+                writer.add_scalars('Dice_Comparison', {
+                    'Mean': val_dice,
+                    'NCR': per_class_dice['NCR'],
+                    'ED': per_class_dice['ED'],
+                    'ET': per_class_dice['ET']
+                }, epoch)
+                
+                writer.add_scalars('HD95_Comparison', {
+                    'Mean': val_hd95,
+                    'NCR': per_class_hd95['NCR'],
+                    'ED': per_class_hd95['ED'],
+                    'ET': per_class_hd95['ET']
+                }, epoch)
+                
+                writer.add_scalars('Loss_Components', {
+                    'Dice': loss_components['dice'],
+                    'Boundary': loss_components['boundary'],
+                    'Tversky': loss_components['tversky'],
+                    'Lovasz': loss_components['lovasz'],
+                    'CE': loss_components['ce']
+                }, epoch)
+                
+                # Flush writer every 10 epochs for real-time viewing
+                if (epoch + 1) % 10 == 0:
+                    writer.flush()
             
             if val_dice > best_val_dice:
                 best_val_dice = val_dice
@@ -2056,7 +2227,9 @@ if __name__ == "__main__":
         logger.info(f"\n{'='*80}")
         logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING - MULTI-GPU")
         logger.info(f"Target: 90-95% Dice Score")
-        logger.info(f"GPUs: {WORLD_SIZE}x A100 80GB")
+        logger.info(f"GPUs: {WORLD_SIZE}x {GPU_TYPE} 192GB (AMD ROCm)")
+        logger.info(f"Total VRAM: {WORLD_SIZE * 192}GB | Effective Batch: {BATCH_SIZE * ACCUMULATION_STEPS * WORLD_SIZE}")
+        logger.info(f"TensorBoard: {TENSORBOARD_DIR}")
         logger.info(f"{'='*80}\n")
         
         # Launch multi-GPU training

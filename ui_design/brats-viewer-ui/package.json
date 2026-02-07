@@ -13,6 +13,8 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.3.2",
     "@mui/material": "^7.3.2",
+    "@tsparticles/react": "^3.0.0",
+    "@tsparticles/slim": "^3.9.1",
     "@types/three": "^0.162.0",
     "framer-motion": "^12.23.12",
     "next": "15.5.3",

@@ -376,13 +376,20 @@ class ReportGenerator:
             spaceAfter=10
         ))
         
-        styles.add(ParagraphStyle(
-            name='BodyText',
-            parent=styles['Normal'],
-            fontSize=11,
-            alignment=TA_JUSTIFY,
-            spaceAfter=8
-        ))
+        # Use existing BodyText or create custom one with different name
+        if 'BodyText' not in styles:
+            styles.add(ParagraphStyle(
+                name='BodyText',
+                parent=styles['Normal'],
+                fontSize=11,
+                alignment=TA_JUSTIFY,
+                spaceAfter=8
+            ))
+        else:
+            # Modify existing BodyText style
+            styles['BodyText'].fontSize = 11
+            styles['BodyText'].alignment = TA_JUSTIFY
+            styles['BodyText'].spaceAfter = 8
         
         return styles
     
@@ -568,15 +575,15 @@ class ReportGenerator:
             <div class="info-grid">
                 <div class="info-box">
                     <label>Patient Name</label>
-                    {report['patient']['name']}
+                    {report['patient'].get('name', 'N/A')}
                     <br><label>Patient ID</label>
-                    {report['patient']['id']}
+                    {report['patient'].get('id', 'N/A')}
                     <br><label>Age / Gender</label>
                     {report['patient'].get('age', 'N/A')} / {report['patient'].get('gender', 'N/A')}
                 </div>
                 <div class="info-box">
                     <label>Physician</label>
-                    {report['doctor']['name']}, {report['doctor'].get('credentials', '')}
+                    {report['doctor'].get('name', 'N/A')}, {report['doctor'].get('credentials', '')}
                     <br><label>Department</label>
                     {report['doctor'].get('department', 'N/A')}
                 </div>
@@ -693,9 +700,9 @@ class ReportGenerator:
         # Patient Info Table
         elements.append(Paragraph("Patient Information", self.styles['SectionHeader']))
         patient_data = [
-            ["Patient Name:", report['patient']['name'], "Patient ID:", report['patient']['id']],
+            ["Patient Name:", report['patient'].get('name', 'N/A'), "Patient ID:", report['patient'].get('id', 'N/A')],
             ["Age:", report['patient'].get('age', 'N/A'), "Gender:", report['patient'].get('gender', 'N/A')],
-            ["Physician:", report['doctor']['name'], "Department:", report['doctor'].get('department', 'N/A')],
+            ["Physician:", report['doctor'].get('name', 'N/A'), "Department:", report['doctor'].get('department', 'N/A')],
         ]
         patient_table = Table(patient_data, colWidths=[100, 150, 100, 150])
         patient_table.setStyle(TableStyle([

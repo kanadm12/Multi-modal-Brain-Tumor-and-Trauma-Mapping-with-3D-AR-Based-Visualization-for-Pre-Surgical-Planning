@@ -1,26 +1,26 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef } from "react";
-import Particles from "react-tsparticles";
-import { loadSlim } from "tsparticles-slim";
-import type { Engine } from "tsparticles-engine";
+import React, { useEffect, useRef } from "react";
+import Particles, { initParticlesEngine } from "@tsparticles/react";
+import { loadSlim } from "@tsparticles/slim";
 
 const ParticlesBackground = () => {
     const videoRef = useRef<HTMLVideoElement>(null);
 
     useEffect(() => {
         if (videoRef.current) {
-            videoRef.current.playbackRate = 0.5; // Slows down the video to half speed
+            videoRef.current.playbackRate = 0.5;
         }
+
+        initParticlesEngine(async (engine) => {
+            await loadSlim(engine);
+        });
     }, []);
 
-    const particlesInit = useCallback(async (engine: Engine) => {
-        await loadSlim(engine);
-    }, []);
     const options = {
         background: {
             color: {
-                value: "transparent", // This needs to be transparent to see the video
+                value: "transparent",
             },
         },
         fpsLimit: 60,
@@ -28,7 +28,7 @@ const ParticlesBackground = () => {
             events: {
                 onHover: {
                     enable: true,
-                    mode: "grab", // Grabbing a node pulls others with it
+                    mode: "grab",
                 },
                 resize: true,
             },
@@ -37,20 +37,20 @@ const ParticlesBackground = () => {
                     distance: 200,
                     links: {
                         opacity: 0.8,
-                        color: "#314EE6" // Links become brighter when grabbed
+                        color: "#314EE6",
                     }
                 },
             },
         },
         particles: {
             color: {
-                value: "#ffffff", // Neuron color
+                value: "#ffffff",
             },
             links: {
-                color: "#314EE6", // Axon/dendrite color
+                color: "#314EE6",
                 distance: 150,
                 enable: true,
-                opacity: 0.3, // Subtle links
+                opacity: 0.3,
                 width: 1,
             },
             collisions: {
@@ -62,8 +62,8 @@ const ParticlesBackground = () => {
                 outModes: {
                     default: "bounce" as const,
                 },
-                random: true, // More organic movement
-                speed: 0.5, // Slow drift
+                random: true,
+                speed: 0.5,
                 straight: false,
             },
             number: {
@@ -71,7 +71,7 @@ const ParticlesBackground = () => {
                     enable: true,
                     area: 800,
                 },
-                value: 80, // Number of neurons
+                value: 80,
             },
             opacity: {
                 value: 0.4,
@@ -80,7 +80,7 @@ const ParticlesBackground = () => {
                 type: "circle",
             },
             size: {
-                value: { min: 1, max: 4 }, // Varying neuron sizes
+                value: { min: 1, max: 4 },
             },
         },
         detectRetina: true,
@@ -94,23 +94,25 @@ const ParticlesBackground = () => {
                 loop
                 muted
                 style={{
-                    position: 'fixed',
-                    width: '100vw',
-                    height: '100vh',
-                    objectFit: 'cover',
-                    zIndex: -2, // Farthest back
+                    position: "fixed",
+                    width: "100vw",
+                    height: "100vh",
+                    objectFit: "cover",
+                    zIndex: -2,
                 }}
             >
                 <source src="/234416.mp4" type="video/mp4" />
             </video>
-            <div style={{
-                position: 'fixed',
-                width: '100%',
-                height: '100%',
-                backgroundColor: 'rgba(0, 0, 0, 0.3)', // Reduced overlay opacity to make video brighter
-                zIndex: -1, // Above video, behind content
-            }} />
-            <Particles id="tsparticles" init={particlesInit} options={options as any} />
+            <div
+                style={{
+                    position: "fixed",
+                    width: "100%",
+                    height: "100%",
+                    backgroundColor: "rgba(0, 0, 0, 0.3)",
+                    zIndex: -1,
+                }}
+            />
+            <Particles id="tsparticles" options={options as any} />
         </>
     );
 };

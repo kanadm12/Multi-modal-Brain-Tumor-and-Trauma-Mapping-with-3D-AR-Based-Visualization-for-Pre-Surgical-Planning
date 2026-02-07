@@ -691,10 +691,3 @@ if __name__ == "__main__":
     engine.save_prediction(prediction, str(output_path), ref_path)
     
     print("\n✅ Inference complete!")
-
-
-# =============================================================================
-# API COMPATIBILITY ALIAS
-# =============================================================================
-# Alias for backward compatibility with api_server.py
-BraTSInference = StableUNet3DInference

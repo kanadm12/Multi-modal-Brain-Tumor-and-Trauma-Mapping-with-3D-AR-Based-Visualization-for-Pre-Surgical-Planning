@@ -16,6 +16,8 @@ import ScienceIcon from '@mui/icons-material/Science';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import { useRouter } from 'next/navigation';
 import FileUploadZone from '@/components/FileUploadZone';
+import ProtectedRoute from '@/components/ProtectedRoute';
+import { useAuth } from '@/contexts/AuthContext';
 import { apiService, StatusResponse } from '@/services/api';
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +31,10 @@ interface PatientDetails {
     description: string;
 }
 
-export default function UploadPage() {
+function UploadPage() {
+    const { user } = useAuth();
+    const router = useRouter();
+    
     const [patientDetails, setPatientDetails] = useState<PatientDetails>({
         name: '',
         age: '',
@@ -46,25 +51,6 @@ export default function UploadPage() {
     const [statusMessage, setStatusMessage] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [showError, setShowError] = useState(false);
-    const router = useRouter();
-
-    // Doctor info from previous page
-    const [doctorInfo, setDoctorInfo] = useState({
-        name: '',
-        department: 'Neuro-Oncology',
-        credentials: 'M.D.'
-    });
-
-    useEffect(() => {
-        const savedDoctor = localStorage.getItem('doctorInfo');
-        if (savedDoctor) {
-            try {
-                setDoctorInfo(JSON.parse(savedDoctor));
-            } catch (e) {
-                console.error('Failed to load doctor info:', e);
-            }
-        }
-    }, []);
 
     const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = event.target;
@@ -100,7 +86,22 @@ export default function UploadPage() {
         try {
             setStatusMessage('Creating session...');
             setProgress(5);
-            const session = await apiService.createSession();
+            const session = await apiService.createSession({
+                patient: {
+                    name: patientDetails.name || 'Anonymous Patient',
+                    age: patientDetails.age,
+                    weight: patientDetails.weight,
+                    height: patientDetails.height,
+                    disorder: patientDetails.disorder,
+                    description: patientDetails.description,
+                },
+                doctor: {
+                    name: user?.full_name || 'Dr. Unknown',
+                    email: user?.email || 'doctor@hospital.com',
+                    designation: user?.role || 'Doctor',
+                    hospital: user?.hospital || 'Hospital',
+                },
+            });
             setSessionId(session.session_id);
             localStorage.setItem('currentSessionId', session.session_id);
             localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
@@ -119,7 +120,11 @@ export default function UploadPage() {
                     age: patientDetails.age || 'N/A',
                     gender: patientDetails.gender || 'N/A',
                 },
-                doctorInfo
+                {
+                    name: user?.full_name || 'Dr. Unknown',
+                    department: user?.role || 'Doctor',
+                    credentials: user?.hospital || 'Hospital',
+                }
             );
 
             setStatusMessage('Processing MRI scans with AI...');
@@ -152,6 +157,20 @@ export default function UploadPage() {
 
     return (
         <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+            <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="h5" sx={{ color: 'primary.main', fontWeight: 'bold' }}>
+                    New Analysis
+                </Typography>
+                <Button
+                    variant="outlined"
+                    onClick={() => router.push('/dashboard')}
+                    disabled={isProcessing}
+                    sx={{ borderColor: 'primary.main', color: 'primary.main' }}
+                >
+                    View History
+                </Button>
+            </Box>
+            
             {isProcessing && (
                 <Box sx={{ mb: 3 }}>
                     <Paper sx={{ p: 2, borderRadius: 2, background: 'linear-gradient(135deg, rgba(44, 90, 160, 0.1) 0%, rgba(30, 61, 110, 0.1) 100%)' }}>
@@ -203,5 +222,13 @@ export default function UploadPage() {
                 <Alert onClose={handleCloseError} severity="error" sx={{ width: '100%' }}>{error}</Alert>
             </Snackbar>
         </Container>
+    );
+}
+
+export default function UploadPageWrapper() {
+    return (
+        <ProtectedRoute>
+            <UploadPage />
+        </ProtectedRoute>
     );
 }

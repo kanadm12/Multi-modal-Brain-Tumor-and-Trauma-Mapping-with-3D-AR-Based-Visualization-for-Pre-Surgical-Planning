@@ -35,6 +35,13 @@ runs/
 *.pth
 *.ckpt
 
+# Workspace runtime data
+workspace/uploads/
+workspace/pipeline_outputs/
+
+# Temporary/junk files
+nul
+
 # IDE
 .vscode/
 .idea/

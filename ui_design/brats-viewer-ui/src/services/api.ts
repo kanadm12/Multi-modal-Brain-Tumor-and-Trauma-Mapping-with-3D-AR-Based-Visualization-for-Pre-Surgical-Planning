@@ -6,6 +6,43 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// =============================================================================
+// AUTHENTICATION INTERFACES
+// =============================================================================
+
+export interface UserData {
+  id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  hospital?: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  user: UserData;
+}
+
+export interface SignupData {
+  email: string;
+  password: string;
+  full_name: string;
+  role: string;
+  hospital?: string;
+}
+
+export interface LoginData {
+  email: string;
+  password: string;
+}
+
+// =============================================================================
+// SESSION INTERFACES
+// =============================================================================
+
 export interface SessionResponse {
   session_id: string;
   created_at: string;
@@ -115,18 +152,162 @@ export interface ReportResponse {
 
 class ApiService {
   private baseUrl: string;
+  private token: string | null = null;
 
   constructor() {
     this.baseUrl = API_BASE_URL;
+    // Load token from localStorage on initialization
+    if (typeof window !== 'undefined') {
+      this.token = localStorage.getItem('auth_token');
+    }
   }
+
+  /**
+   * Set authentication token
+   */
+  setToken(token: string | null) {
+    this.token = token;
+    if (typeof window !== 'undefined') {
+      if (token) {
+        localStorage.setItem('auth_token', token);
+      } else {
+        localStorage.removeItem('auth_token');
+      }
+    }
+  }
+
+  /**
+   * Get current token
+   */
+  getToken(): string | null {
+    return this.token;
+  }
+
+  /**
+   * Get authentication headers
+   */
+  private getAuthHeaders(): HeadersInit {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+    return headers;
+  }
+
+  /**
+   * Get auth headers for FormData (no Content-Type)
+   */
+  private getAuthHeadersOnly(): HeadersInit {
+    const headers: HeadersInit = {};
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+    return headers;
+  }
+
+  // =============================================================================
+  // AUTHENTICATION METHODS
+  // =============================================================================
+
+  /**
+   * Sign up a new user
+   */
+  async signup(data: SignupData): Promise<UserData> {
+    const response = await fetch(`${this.baseUrl}/api/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Signup failed');
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Login with email and password
+   */
+  async login(data: LoginData): Promise<AuthResponse> {
+    const response = await fetch(`${this.baseUrl}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Login failed');
+    }
+
+    const authData: AuthResponse = await response.json();
+    this.setToken(authData.access_token);
+    return authData;
+  }
+
+  /**
+   * Get current user info
+   */
+  async getCurrentUser(): Promise<UserData> {
+    const response = await fetch(`${this.baseUrl}/api/me`, {
+      headers: this.getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get user info');
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Logout current user
+   */
+  async logout(): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/logout`, {
+        method: 'POST',
+        headers: this.getAuthHeaders(),
+      });
+    } finally {
+      this.setToken(null);
+    }
+  }
+
+  // =============================================================================
+  // SESSION METHODS
+  // =============================================================================
 
   /**
    * Create a new session for inference
    */
-  async createSession(): Promise<SessionResponse> {
+  async createSession(data: {
+    patient: {
+      name: string;
+      age?: string;
+      weight?: string;
+      height?: string;
+      disorder?: string;
+      description?: string;
+    };
+    doctor: {
+      name: string;
+      email: string;
+      designation: string;
+      hospital: string;
+    };
+  }): Promise<SessionResponse> {
     const response = await fetch(`${this.baseUrl}/api/session/create`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        ...this.getAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
     });
 
     if (!response.ok) {
@@ -147,12 +328,27 @@ class ApiService {
 
     const response = await fetch(`${this.baseUrl}/api/upload/${sessionId}`, {
       method: 'POST',
+      headers: this.getAuthHeadersOnly(),  // Don't set Content-Type for FormData
       body: formData,
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || 'Upload failed');
+      console.error('Upload response status:', response.status, response.statusText);
+      const responseText = await response.text();
+      console.error('Upload response text:', responseText);
+      
+      let error;
+      try {
+        error = JSON.parse(responseText);
+      } catch {
+        error = { detail: responseText || response.statusText };
+      }
+      
+      console.error('Upload error:', error);
+      const errorMessage = typeof error.detail === 'string' 
+        ? error.detail 
+        : (Array.isArray(error.detail) ? error.detail.map((e: any) => e.msg).join(', ') : JSON.stringify(error.detail)) || error.message || 'Upload failed';
+      throw new Error(errorMessage);
     }
 
     return response.json();
@@ -168,7 +364,10 @@ class ApiService {
   ): Promise<PredictionResponse> {
     const response = await fetch(`${this.baseUrl}/api/predict/${sessionId}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        ...this.getAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
         patient_info: patientInfo,
         doctor_info: doctorInfo,
@@ -187,7 +386,9 @@ class ApiService {
    * Get processing status
    */
   async getStatus(sessionId: string): Promise<StatusResponse> {
-    const response = await fetch(`${this.baseUrl}/api/status/${sessionId}`);
+    const response = await fetch(`${this.baseUrl}/api/status/${sessionId}`, {
+      headers: this.getAuthHeaders(),
+    });
 
     if (!response.ok) {
       throw new Error(`Failed to get status: ${response.statusText}`);
@@ -259,7 +460,9 @@ class ApiService {
    * Download PDF report
    */
   async downloadReportPDF(sessionId: string): Promise<Blob> {
-    const response = await fetch(`${this.baseUrl}/api/download/report/${sessionId}`);
+    const response = await fetch(`${this.baseUrl}/api/report/${sessionId}/pdf`, {
+      headers: this.getAuthHeaders(),
+    });
 
     if (!response.ok) {
       throw new Error(`Failed to download report: ${response.statusText}`);
@@ -286,6 +489,25 @@ class ApiService {
    */
   async healthCheck(): Promise<{ status: string; gpu_available: boolean }> {
     const response = await fetch(`${this.baseUrl}/health`);
+    return response.json();
+  }
+
+  /**
+   * Get all sessions for the logged-in doctor
+   */
+  async getUserSessions(): Promise<any[]> {
+    const response = await fetch(
+      `${this.baseUrl}/api/sessions`,
+      {
+        method: 'GET',
+        headers: this.getAuthHeaders(),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch sessions: ${response.statusText}`);
+    }
+
     return response.json();
   }
 }
