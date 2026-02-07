@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from "react";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
+import type { ISourceOptions } from "@tsparticles/engine";
 import { loadSlim } from "@tsparticles/slim";
 
 const ParticlesBackground = () => {
@@ -112,7 +113,7 @@ const ParticlesBackground = () => {
                     zIndex: -1,
                 }}
             />
-            <Particles id="tsparticles" options={options as any} />
+            <Particles id="tsparticles" options={options as ISourceOptions} />
         </>
     );
 };

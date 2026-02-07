@@ -347,7 +347,7 @@ class ApiService {
       console.error('Upload error:', error);
       const errorMessage = typeof error.detail === 'string' 
         ? error.detail 
-        : (Array.isArray(error.detail) ? error.detail.map((e: any) => e.msg).join(', ') : JSON.stringify(error.detail)) || error.message || 'Upload failed';
+        : (Array.isArray(error.detail) ? error.detail.map((e: { msg: string }) => e.msg).join(', ') : JSON.stringify(error.detail)) || error.message || 'Upload failed';
       throw new Error(errorMessage);
     }
 
@@ -495,7 +495,7 @@ class ApiService {
   /**
    * Get all sessions for the logged-in doctor
    */
-  async getUserSessions(): Promise<any[]> {
+  async getUserSessions(): Promise<SessionResponse[]> {
     const response = await fetch(
       `${this.baseUrl}/api/sessions`,
       {

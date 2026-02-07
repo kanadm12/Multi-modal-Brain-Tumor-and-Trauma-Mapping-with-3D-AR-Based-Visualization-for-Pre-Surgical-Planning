@@ -52,7 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signup = async (data: SignupData) => {
     setLoading(true);
     try {
-      const userData = await apiService.signup(data);
+      await apiService.signup(data);
       // After signup, automatically log in
       await login({ email: data.email, password: data.password });
     } finally {
