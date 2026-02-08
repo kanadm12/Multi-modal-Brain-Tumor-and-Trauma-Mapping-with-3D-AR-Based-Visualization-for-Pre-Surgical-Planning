@@ -2,9 +2,12 @@
 // API SERVICE
 // 
 // Handles communication with the BraTS inference backend
+// Uses Next.js API routes for auth (connects to MongoDB)
 // =============================================================================
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// For auth, use local API routes (Next.js API routes connect to MongoDB)
+// For inference, use external backend or RunPod
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 // =============================================================================
 // AUTHENTICATION INTERFACES
@@ -219,7 +222,7 @@ class ApiService {
    * Sign up a new user
    */
   async signup(data: SignupData): Promise<UserData> {
-    const response = await fetch(`${this.baseUrl}/api/signup`, {
+    const response = await fetch(`${this.baseUrl}/api/auth/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -227,17 +230,18 @@ class ApiService {
 
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.detail || 'Signup failed');
+      throw new Error(error.error || error.detail || 'Signup failed');
     }
 
-    return response.json();
+    const result = await response.json();
+    return result.user;
   }
 
   /**
    * Login with email and password
    */
   async login(data: LoginData): Promise<AuthResponse> {
-    const response = await fetch(`${this.baseUrl}/api/login`, {
+    const response = await fetch(`${this.baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -245,7 +249,7 @@ class ApiService {
 
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.detail || 'Login failed');
+      throw new Error(error.error || error.detail || 'Login failed');
     }
 
     const authData: AuthResponse = await response.json();
@@ -257,7 +261,7 @@ class ApiService {
    * Get current user info
    */
   async getCurrentUser(): Promise<UserData> {
-    const response = await fetch(`${this.baseUrl}/api/me`, {
+    const response = await fetch(`${this.baseUrl}/api/auth/me`, {
       headers: this.getAuthHeaders(),
     });
 
@@ -272,14 +276,8 @@ class ApiService {
    * Logout current user
    */
   async logout(): Promise<void> {
-    try {
-      await fetch(`${this.baseUrl}/api/logout`, {
-        method: 'POST',
-        headers: this.getAuthHeaders(),
-      });
-    } finally {
-      this.setToken(null);
-    }
+    // Just clear the token locally (JWT is stateless)
+    this.setToken(null);
   }
 
   // =============================================================================
@@ -305,13 +303,18 @@ class ApiService {
       hospital: string;
     };
   }): Promise<SessionResponse> {
-    const response = await fetch(`${this.baseUrl}/api/session/create`, {
+    const response = await fetch(`${this.baseUrl}/api/sessions`, {
       method: 'POST',
       headers: {
         ...this.getAuthHeaders(),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(data),
+      body: JSON.stringify({
+        patient_name: data.patient.name,
+        patient_age: data.patient.age,
+        patient_info: data.patient,
+        doctor: data.doctor,
+      }),
     });
 
     if (!response.ok) {
