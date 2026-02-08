@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/mongodb';
 import { hashPassword } from '@/lib/auth';
+import { createAuditLog, AuditActions } from '@/lib/audit';
 
 export async function POST(request: NextRequest) {
   try {
@@ -64,6 +65,13 @@ export async function POST(request: NextRequest) {
     };
 
     const result = await usersCollection.insertOne(newUser);
+
+    // Create audit log
+    await createAuditLog(
+      result.insertedId.toString(),
+      AuditActions.USER_CREATED,
+      { email: newUser.email, role: newUser.role }
+    );
 
     // Return success (without password)
     return NextResponse.json({

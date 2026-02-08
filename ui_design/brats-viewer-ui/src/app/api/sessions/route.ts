@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/mongodb';
 import { getCurrentUser } from '@/lib/auth';
+import { createAuditLog, AuditActions } from '@/lib/audit';
 
 // GET - Get all sessions for the current user
 export async function GET(request: NextRequest) {
@@ -81,6 +82,36 @@ export async function POST(request: NextRequest) {
     };
 
     const result = await sessionsCollection.insertOne(newSession);
+
+    // Also create patient_data entry
+    const patientDataCollection = db.collection('patient_data');
+    await patientDataCollection.insertOne({
+      session_id: result.insertedId.toString(),
+      user_id: tokenPayload.userId,
+      patient_name: newSession.patient_name,
+      patient_age: newSession.patient_age,
+      patient_info: newSession.patient_info,
+      created_at: new Date().toISOString(),
+    });
+
+    // Create audit log
+    await createAuditLog(
+      tokenPayload.userId,
+      AuditActions.SESSION_CREATED,
+      { 
+        session_id: result.insertedId.toString(),
+        patient_name: newSession.patient_name 
+      }
+    );
+
+    await createAuditLog(
+      tokenPayload.userId,
+      AuditActions.PATIENT_DATA_CREATED,
+      { 
+        session_id: result.insertedId.toString(),
+        patient_name: newSession.patient_name 
+      }
+    );
 
     return NextResponse.json({
       session_id: result.insertedId.toString(),

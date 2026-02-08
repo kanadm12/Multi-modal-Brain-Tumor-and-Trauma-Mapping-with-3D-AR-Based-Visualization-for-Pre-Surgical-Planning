@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/mongodb';
 import { verifyPassword, generateToken } from '@/lib/auth';
+import { createAuditLog, AuditActions } from '@/lib/audit';
 
 export async function POST(request: NextRequest) {
   try {
@@ -53,6 +54,13 @@ export async function POST(request: NextRequest) {
       userId: user._id.toString(),
       email: user.email,
     });
+
+    // Create audit log for successful login
+    await createAuditLog(
+      user._id.toString(),
+      AuditActions.LOGIN_SUCCESS,
+      { email: user.email }
+    );
 
     // Return token and user data
     return NextResponse.json({
