@@ -46,7 +46,11 @@ export interface LoginData {
 export interface SessionResponse {
   session_id: string;
   created_at: string;
-  expires_at: string;
+  expires_at?: string;
+  patient_name?: string;
+  patient_age?: string;
+  status: string;
+  has_report: boolean;
 }
 
 export interface UploadResponse {

@@ -12,11 +12,8 @@ import {
     Button,
     Divider,
     Chip,
-    CircularProgress,
-    IconButton,
-    Tooltip
+    CircularProgress
 } from '@mui/material';
-import DownloadIcon from '@mui/icons-material/Download';
 import ViewInArIcon from '@mui/icons-material/ViewInAr';
 import DescriptionIcon from '@mui/icons-material/Description';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -51,27 +48,6 @@ function ViewerContent() {
     const [brainOpacity, setBrainOpacity] = useState(15);
     const [scale, setScale] = useState(100);
 
-    useEffect(() => {
-        if (sessionId) {
-            loadData();
-        } else {
-            // Try to load from localStorage
-            const savedSession = localStorage.getItem('currentSessionId');
-            if (savedSession) {
-                loadDataForSession(savedSession);
-            } else {
-                setLoading(false);
-                setError('No session found. Please upload MRI scans first.');
-            }
-        }
-    }, [sessionId]);
-
-    const loadData = () => {
-        if (sessionId) {
-            loadDataForSession(sessionId);
-        }
-    };
-
     const loadDataForSession = async (sid: string) => {
         setLoading(true);
         setError(null);
@@ -89,6 +65,27 @@ function ViewerContent() {
             setError(err instanceof Error ? err.message : 'Failed to load visualization data');
         } finally {
             setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (sessionId) {
+            loadDataForSession(sessionId);
+        } else {
+            // Try to load from localStorage
+            const savedSession = localStorage.getItem('currentSessionId');
+            if (savedSession) {
+                loadDataForSession(savedSession);
+            } else {
+                setLoading(false);
+                setError('No session found. Please upload MRI scans first.');
+            }
+        }
+    }, [sessionId]);
+
+    const loadData = () => {
+        if (sessionId) {
+            loadDataForSession(sessionId);
         }
     };
 
@@ -125,8 +122,6 @@ function ViewerContent() {
             console.error('Failed to download GLTF:', err);
         }
     };
-
-    const tumorStats = meshData?.tumor_stats || {};
 
     return (
         <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>

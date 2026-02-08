@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
     Box, 
     Button, 
@@ -45,7 +45,6 @@ function UploadPage() {
         description: ''
     });
     const [files, setFiles] = useState<File[]>([]);
-    const [sessionId, setSessionId] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState(0);
     const [statusMessage, setStatusMessage] = useState('');
@@ -102,7 +101,6 @@ function UploadPage() {
                     hospital: user?.hospital || 'Hospital',
                 },
             });
-            setSessionId(session.session_id);
             localStorage.setItem('currentSessionId', session.session_id);
             localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
 

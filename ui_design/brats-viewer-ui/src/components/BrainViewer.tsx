@@ -280,18 +280,20 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
   // Initialize scene on mount
   useEffect(() => {
     initScene();
+    const container = containerRef.current;
 
     return () => {
       // Cleanup
       if (animationIdRef.current) {
         cancelAnimationFrame(animationIdRef.current);
       }
-      if (rendererRef.current && containerRef.current) {
-        containerRef.current.removeChild(rendererRef.current.domElement);
+      if (rendererRef.current && container) {
+        container.removeChild(rendererRef.current.domElement);
         rendererRef.current.dispose();
       }
     };
-  }, [initScene]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <Box

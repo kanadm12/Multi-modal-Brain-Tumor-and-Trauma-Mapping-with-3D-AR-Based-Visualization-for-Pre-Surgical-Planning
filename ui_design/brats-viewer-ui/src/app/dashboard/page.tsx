@@ -16,24 +16,15 @@ import {
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { apiService } from '@/services/api';
+import { apiService, SessionResponse } from '@/services/api';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import DownloadIcon from '@mui/icons-material/Download';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 
-interface Session {
-  session_id: string;
-  patient_name: string;
-  patient_age?: string;
-  created_at: string;
-  status: string;
-  has_report: boolean;
-}
-
 function DashboardPage() {
   const { user } = useAuth();
   const router = useRouter();
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessions, setSessions] = useState<SessionResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,7 +133,7 @@ function DashboardPage() {
                     </Typography>
                     <Chip
                       label={session.status}
-                      color={getStatusColor(session.status) as any}
+                      color={getStatusColor(session.status) as "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning"}
                       size="small"
                       sx={{ textTransform: 'capitalize' }}
                     />
@@ -188,7 +179,7 @@ function DashboardPage() {
                           a.href = url;
                           a.download = `report_${session.session_id}.pdf`;
                           a.click();
-                        } catch (err) {
+                        } catch (_err) {
                           alert('Failed to download PDF');
                         }
                       }}

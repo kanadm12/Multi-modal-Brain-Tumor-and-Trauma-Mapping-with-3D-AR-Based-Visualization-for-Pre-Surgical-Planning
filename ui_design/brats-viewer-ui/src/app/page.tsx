@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { Box, Button, Typography, Container, Paper, Stack } from '@mui/material';
+import { Button, Typography, Container, Paper, Stack } from '@mui/material';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';

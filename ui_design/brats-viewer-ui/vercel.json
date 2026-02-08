@@ -1,16 +1,11 @@
 {
   "version": 2,
-  "name": "brats-tumor-viewer",
   "builds": [
     {
       "src": "package.json",
       "use": "@vercel/next"
     }
   ],
-  "env": {
-    "NEXT_PUBLIC_RUNPOD_ENDPOINT_ID": "@runpod-endpoint-id",
-    "NEXT_PUBLIC_RUNPOD_API_KEY": "@runpod-api-key"
-  },
   "headers": [
     {
       "source": "/api/(.*)",

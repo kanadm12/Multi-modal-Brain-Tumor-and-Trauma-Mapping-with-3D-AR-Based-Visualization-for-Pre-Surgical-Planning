@@ -39,8 +39,8 @@ export default function LoginPage() {
     try {
       await login(formData);
       router.push('/upload'); // Redirect to upload page after login
-    } catch (err: any) {
-      setError(err.message || 'Login failed. Please check your credentials.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Login failed. Please check your credentials.');
     }
   };
 
@@ -128,7 +128,7 @@ export default function LoginPage() {
 
             <Box sx={{ textAlign: 'center', mt: 2 }}>
               <Typography variant="body2" color="primary">
-                Don't have an account?{' '}
+                Don&apos;t have an account?{' '}
                 <Link href="/signup" underline="hover" color="primary">
                   Sign up here
                 </Link>

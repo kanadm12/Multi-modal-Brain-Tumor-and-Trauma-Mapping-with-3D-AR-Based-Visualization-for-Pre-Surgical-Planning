@@ -62,8 +62,8 @@ export default function SignupPage() {
         hospital: formData.hospital,
       });
       router.push('/upload'); // Redirect to upload page after signup
-    } catch (err: any) {
-      setError(err.message || 'Signup failed. Please try again.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Signup failed. Please try again.');
     }
   };
 
