@@ -19,8 +19,21 @@ import FileUploadZone from '@/components/FileUploadZone';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiService } from '@/services/api';
-import runpodApi, { RunPodJobResponse } from '@/services/runpod-api';
 export const dynamic = 'force-dynamic';
+
+// Helper to convert file to base64
+async function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = reader.result as string;
+            const base64 = result.includes(',') ? result.split(',')[1] : result;
+            resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
 
 interface PatientDetails {
     name: string;
@@ -84,11 +97,6 @@ function UploadPage() {
         setError(null);
 
         try {
-            // Check if RunPod is configured
-            if (!runpodApi.isConfigured()) {
-                throw new Error('RunPod is not configured. Please contact the administrator.');
-            }
-
             setStatusMessage('Creating session...');
             setProgress(5);
             const session = await apiService.createSession({
@@ -110,50 +118,82 @@ function UploadPage() {
             localStorage.setItem('currentSessionId', session.session_id);
             localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
 
+            setStatusMessage('Converting MRI files...');
+            setProgress(10);
+
+            // Convert files to base64
+            const fileData = await Promise.all(
+                files.map(async (file) => ({
+                    filename: file.name,
+                    content: await fileToBase64(file),
+                }))
+            );
+
             setStatusMessage('Sending MRI scans to AI server...');
             setProgress(15);
 
-            // Submit directly to RunPod (bypasses Vercel size limit)
-            const { jobId } = await runpodApi.submitJob(
-                files,
-                {
-                    name: patientDetails.name || 'Anonymous',
-                    age: patientDetails.age || 'N/A',
-                    id: `PAT-${Date.now()}`,
-                },
-                {
-                    generate_report: true,
-                    tta_enabled: false, // Disable TTA for faster inference
-                }
-            );
+            // Submit via our API route (server-side proxy to RunPod)
+            const submitResponse = await fetch('/api/runpod/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    files: fileData,
+                    patient_info: {
+                        name: patientDetails.name || 'Anonymous',
+                        age: patientDetails.age || 'N/A',
+                        id: `PAT-${Date.now()}`,
+                    },
+                    options: {
+                        generate_report: true,
+                        tta_enabled: false,
+                    },
+                }),
+            });
+
+            if (!submitResponse.ok) {
+                const err = await submitResponse.json();
+                throw new Error(err.error || 'Failed to submit job');
+            }
+
+            const { jobId } = await submitResponse.json();
 
             setStatusMessage('AI is analyzing MRI scans...');
             setProgress(25);
 
-            // Poll RunPod for status
-            const result = await runpodApi.pollJob(
-                jobId,
-                (status: RunPodJobResponse) => {
-                    let progressValue = 25;
+            // Poll for status via our API route
+            const pollForResult = async (): Promise<unknown> => {
+                const maxAttempts = 200; // 10 minutes with 3s intervals
+                for (let i = 0; i < maxAttempts; i++) {
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                    const statusResponse = await fetch(`/api/runpod/status/${jobId}`);
+                    if (!statusResponse.ok) continue;
+                    
+                    const status = await statusResponse.json();
+                    
                     switch (status.status) {
                         case 'IN_QUEUE':
-                            progressValue = 30;
+                            setProgress(30);
                             setStatusMessage('Waiting for GPU worker...');
                             break;
                         case 'IN_PROGRESS':
-                            progressValue = 50;
+                            setProgress(50);
                             setStatusMessage('AI is analyzing MRI scans...');
                             break;
                         case 'COMPLETED':
-                            progressValue = 95;
+                            setProgress(95);
                             setStatusMessage('Analysis complete!');
-                            break;
+                            return status.output;
+                        case 'FAILED':
+                            throw new Error(status.error || 'Job failed');
+                        case 'CANCELLED':
+                            throw new Error('Job was cancelled');
                     }
-                    setProgress(progressValue);
-                },
-                3000, // Poll every 3 seconds
-                600000 // 10 minute timeout
-            );
+                }
+                throw new Error('Job timed out');
+            };
+
+            const result = await pollForResult();
 
             // Store result in localStorage for viewer
             localStorage.setItem(`result_${session.session_id}`, JSON.stringify(result));
