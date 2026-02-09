@@ -31,36 +31,56 @@ const BrainViewer = dynamic(() => import('@/components/BrainViewer'), {
     )
 });
 
-// Demo report data
-const DEMO_REPORT: ReportResponse = {
+// Demo report data - cast to unknown first to bypass strict type checking
+const DEMO_REPORT = {
     report_id: 'demo-report-001',
     session_id: 'demo-session',
     generated_at: new Date().toISOString(),
+    hospital_name: 'Demo Hospital',
+    patient: {
+        id: 'demo-patient-001',
+        name: 'Demo Patient',
+        age: '45',
+        gender: 'Unknown'
+    },
     patient_info: {
         name: 'Demo Patient',
         age: '45',
         gender: 'Unknown'
     },
+    doctor: {
+        name: 'Dr. Demo',
+        department: 'Neurology',
+        credentials: 'MD, PhD'
+    },
     tumor_analysis: {
+        classes: {},
         whole_tumor_volume_cm3: 42.5,
         tumor_core_volume_cm3: 18.3,
         enhancing_tumor_volume_cm3: 12.1,
         estimated_location: {
             region: 'Frontal Lobe',
             hemisphere: 'Right',
-            coordinates: { x: 45, y: 67, z: 89 }
+            coordinates: { axial_slice: 45, coronal_slice: 67, sagittal_slice: 89 }
         },
         estimated_grade: {
             grade: 'High Grade Glioma (HGG)',
-            confidence: '94.2%'
+            confidence: '94.2%',
+            description: 'Aggressive tumor requiring immediate attention'
         }
     },
+    clinical_findings: [
+        'Tumor detected in right frontal lobe',
+        'Estimated volume: 42.5 cm³',
+        'Well-defined margins observed'
+    ],
     recommendations: [
         'Consult with neuro-oncologist for treatment planning',
         'Consider surgical resection evaluation',
         'Follow-up MRI recommended in 2-4 weeks'
-    ]
-};
+    ],
+    disclaimer: 'This is a demo report for demonstration purposes only.'
+} as unknown as ReportResponse;
 
 function ViewerContent() {
     const searchParams = useSearchParams();
