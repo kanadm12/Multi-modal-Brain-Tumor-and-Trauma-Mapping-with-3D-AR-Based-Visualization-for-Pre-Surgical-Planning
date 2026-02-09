@@ -247,17 +247,49 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
     }
   }, [meshData, brainOpacity, createMesh, showBrain, showNCR, showED, showET]);
 
-  // Update visibility when toggles change
-  useEffect(() => {
-    if (!meshGroupRef.current) return;
-
-    meshGroupRef.current.children.forEach((child: THREE.Object3D) => {
+  // Helper function to update visibility on GLB models
+  const updateGlbVisibility = useCallback((object: THREE.Object3D) => {
+    object.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         switch (child.name) {
           case 'brain':
             child.visible = showBrain;
-            if (child.material instanceof THREE.MeshPhongMaterial) {
+            if (child.material instanceof THREE.MeshStandardMaterial || 
+                child.material instanceof THREE.MeshPhongMaterial) {
+              child.material.transparent = true;
               child.material.opacity = brainOpacity;
+              child.material.needsUpdate = true;
+            }
+            break;
+          case 'NCR':
+            child.visible = showNCR;
+            break;
+          case 'ED':
+            child.visible = showED;
+            break;
+          case 'ET':
+            child.visible = showET;
+            break;
+        }
+      }
+    });
+  }, [showBrain, showNCR, showED, showET, brainOpacity]);
+
+  // Update visibility when toggles change
+  useEffect(() => {
+    if (!meshGroupRef.current) return;
+
+    // Handle both direct meshes and GLB models (which have nested structure)
+    meshGroupRef.current.traverse((child: THREE.Object3D) => {
+      if (child instanceof THREE.Mesh) {
+        switch (child.name) {
+          case 'brain':
+            child.visible = showBrain;
+            if (child.material instanceof THREE.MeshStandardMaterial || 
+                child.material instanceof THREE.MeshPhongMaterial) {
+              child.material.transparent = true;
+              child.material.opacity = brainOpacity;
+              child.material.needsUpdate = true;
             }
             break;
           case 'NCR':
@@ -330,8 +362,34 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
         const center = box.getCenter(new THREE.Vector3());
         model.position.sub(center);
         
+        // Traverse and name meshes for visibility control
+        // GLB nodes are named: "Brain", "NCR", "ED", "ET"
+        model.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            // Normalize names for our visibility system
+            const nodeName = child.name || child.parent?.name || '';
+            if (nodeName.toLowerCase().includes('brain')) {
+              child.name = 'brain';
+              // Set brain opacity
+              if (child.material instanceof THREE.MeshStandardMaterial) {
+                child.material.transparent = true;
+                child.material.opacity = brainOpacity;
+              }
+            } else if (nodeName === 'NCR' || nodeName.toLowerCase().includes('ncr') || nodeName.toLowerCase().includes('necrotic')) {
+              child.name = 'NCR';
+            } else if (nodeName === 'ED' || nodeName.toLowerCase().includes('ed') || nodeName.toLowerCase().includes('edema')) {
+              child.name = 'ED';
+            } else if (nodeName === 'ET' || nodeName.toLowerCase().includes('et') || nodeName.toLowerCase().includes('enhancing')) {
+              child.name = 'ET';
+            }
+          }
+        });
+        
         // Add to group
         group.add(model);
+
+        // Apply initial visibility
+        updateGlbVisibility(model);
 
         // Auto-fit camera
         if (cameraRef.current && controlsRef.current) {
