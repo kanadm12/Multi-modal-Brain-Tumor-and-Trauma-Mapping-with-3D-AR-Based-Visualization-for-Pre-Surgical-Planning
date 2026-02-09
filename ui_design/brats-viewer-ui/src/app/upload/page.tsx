@@ -18,7 +18,8 @@ import { useRouter } from 'next/navigation';
 import FileUploadZone from '@/components/FileUploadZone';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
-import { apiService, StatusResponse } from '@/services/api';
+import { apiService } from '@/services/api';
+import runpodApi, { RunPodJobResponse } from '@/services/runpod-api';
 export const dynamic = 'force-dynamic';
 
 interface PatientDetails {
@@ -83,6 +84,11 @@ function UploadPage() {
         setError(null);
 
         try {
+            // Check if RunPod is configured
+            if (!runpodApi.isConfigured()) {
+                throw new Error('RunPod is not configured. Please contact the administrator.');
+            }
+
             setStatusMessage('Creating session...');
             setProgress(5);
             const session = await apiService.createSession({
@@ -104,36 +110,53 @@ function UploadPage() {
             localStorage.setItem('currentSessionId', session.session_id);
             localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
 
-            setStatusMessage('Uploading MRI scans...');
+            setStatusMessage('Sending MRI scans to AI server...');
             setProgress(15);
-            await apiService.uploadFiles(session.session_id, files);
 
-            setStatusMessage('Starting AI analysis...');
-            setProgress(25);
-            await apiService.startPrediction(
-                session.session_id,
+            // Submit directly to RunPod (bypasses Vercel size limit)
+            const { jobId } = await runpodApi.submitJob(
+                files,
                 {
                     name: patientDetails.name || 'Anonymous',
-                    id: `PAT-${Date.now()}`,
                     age: patientDetails.age || 'N/A',
-                    gender: patientDetails.gender || 'N/A',
+                    id: `PAT-${Date.now()}`,
                 },
                 {
-                    name: user?.full_name || 'Dr. Unknown',
-                    department: user?.role || 'Doctor',
-                    credentials: user?.hospital || 'Hospital',
+                    generate_report: true,
+                    tta_enabled: false, // Disable TTA for faster inference
                 }
             );
 
-            setStatusMessage('Processing MRI scans with AI...');
-            await apiService.pollStatus(
-                session.session_id,
-                (status: StatusResponse) => {
-                    setProgress(25 + (status.progress * 0.7));
-                    setStatusMessage(status.message);
+            setStatusMessage('AI is analyzing MRI scans...');
+            setProgress(25);
+
+            // Poll RunPod for status
+            const result = await runpodApi.pollJob(
+                jobId,
+                (status: RunPodJobResponse) => {
+                    let progressValue = 25;
+                    switch (status.status) {
+                        case 'IN_QUEUE':
+                            progressValue = 30;
+                            setStatusMessage('Waiting for GPU worker...');
+                            break;
+                        case 'IN_PROGRESS':
+                            progressValue = 50;
+                            setStatusMessage('AI is analyzing MRI scans...');
+                            break;
+                        case 'COMPLETED':
+                            progressValue = 95;
+                            setStatusMessage('Analysis complete!');
+                            break;
+                    }
+                    setProgress(progressValue);
                 },
-                2000
+                3000, // Poll every 3 seconds
+                600000 // 10 minute timeout
             );
+
+            // Store result in localStorage for viewer
+            localStorage.setItem(`result_${session.session_id}`, JSON.stringify(result));
 
             setProgress(100);
             setStatusMessage('Analysis complete! Redirecting...');
