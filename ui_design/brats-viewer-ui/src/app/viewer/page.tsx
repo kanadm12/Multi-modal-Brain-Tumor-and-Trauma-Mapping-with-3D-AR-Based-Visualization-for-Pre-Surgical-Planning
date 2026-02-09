@@ -31,14 +31,47 @@ const BrainViewer = dynamic(() => import('@/components/BrainViewer'), {
     )
 });
 
+// Demo report data
+const DEMO_REPORT: ReportResponse = {
+    report_id: 'demo-report-001',
+    session_id: 'demo-session',
+    generated_at: new Date().toISOString(),
+    patient_info: {
+        name: 'Demo Patient',
+        age: '45',
+        gender: 'Unknown'
+    },
+    tumor_analysis: {
+        whole_tumor_volume_cm3: 42.5,
+        tumor_core_volume_cm3: 18.3,
+        enhancing_tumor_volume_cm3: 12.1,
+        estimated_location: {
+            region: 'Frontal Lobe',
+            hemisphere: 'Right',
+            coordinates: { x: 45, y: 67, z: 89 }
+        },
+        estimated_grade: {
+            grade: 'High Grade Glioma (HGG)',
+            confidence: '94.2%'
+        }
+    },
+    recommendations: [
+        'Consult with neuro-oncologist for treatment planning',
+        'Consider surgical resection evaluation',
+        'Follow-up MRI recommended in 2-4 weeks'
+    ]
+};
+
 function ViewerContent() {
     const searchParams = useSearchParams();
     const sessionId = searchParams.get('session');
+    const isDemo = searchParams.get('demo') === 'true';
 
     const [meshData, setMeshData] = useState<MeshResponse | null>(null);
     const [report, setReport] = useState<ReportResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [glbUrl, setGlbUrl] = useState<string | null>(null);
 
     // Display controls
     const [showBrain, setShowBrain] = useState(true);
@@ -68,23 +101,58 @@ function ViewerContent() {
         }
     };
 
+    const loadDemoData = () => {
+        // Load demo GLB file and report
+        setGlbUrl('/demo_brain_tumor.glb');
+        setReport(DEMO_REPORT);
+        
+        // Try to get patient info from localStorage
+        const patientInfo = localStorage.getItem('patientInfo');
+        if (patientInfo) {
+            try {
+                const parsed = JSON.parse(patientInfo);
+                setReport(prev => prev ? {
+                    ...prev,
+                    patient_info: {
+                        name: parsed.name || 'Demo Patient',
+                        age: parsed.age || '45',
+                        gender: parsed.gender || 'Unknown'
+                    }
+                } : prev);
+            } catch {
+                // Use default demo data
+            }
+        }
+        
+        setLoading(false);
+    };
+
     useEffect(() => {
-        if (sessionId) {
+        if (isDemo || sessionId?.startsWith('demo-')) {
+            // Demo mode - load pre-made GLB
+            loadDemoData();
+        } else if (sessionId) {
             loadDataForSession(sessionId);
         } else {
             // Try to load from localStorage
             const savedSession = localStorage.getItem('currentSessionId');
             if (savedSession) {
-                loadDataForSession(savedSession);
+                if (savedSession.startsWith('demo-')) {
+                    loadDemoData();
+                } else {
+                    loadDataForSession(savedSession);
+                }
             } else {
                 setLoading(false);
                 setError('No session found. Please upload MRI scans first.');
             }
         }
-    }, [sessionId]);
+    }, [sessionId, isDemo]);
 
     const loadData = () => {
-        if (sessionId) {
+        if (isDemo || sessionId?.startsWith('demo-')) {
+            loadDemoData();
+        } else if (sessionId) {
             loadDataForSession(sessionId);
         }
     };
@@ -151,6 +219,7 @@ function ViewerContent() {
                         ) : (
                             <BrainViewer 
                                 meshData={meshData}
+                                glbUrl={glbUrl}
                                 loading={loading}
                                 showBrain={showBrain}
                                 showNCR={showNCR}

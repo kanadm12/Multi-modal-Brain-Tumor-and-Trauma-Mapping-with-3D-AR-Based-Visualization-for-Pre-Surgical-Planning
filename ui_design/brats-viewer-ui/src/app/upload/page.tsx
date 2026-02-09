@@ -18,9 +18,10 @@ import { useRouter } from 'next/navigation';
 import FileUploadZone from '@/components/FileUploadZone';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
-import { apiService } from '@/services/api';
-import runpodApi, { RunPodJobResponse } from '@/services/runpod-api';
 export const dynamic = 'force-dynamic';
+
+// DEMO MODE: Uses pre-made GLB file instead of real processing
+const DEMO_MODE = true;
 
 interface PatientDetails {
     name: string;
@@ -83,91 +84,62 @@ function UploadPage() {
         setProgress(0);
         setError(null);
 
-        try {
-            setStatusMessage('Creating session...');
-            setProgress(5);
-            const session = await apiService.createSession({
-                patient: {
-                    name: patientDetails.name || 'Anonymous Patient',
-                    age: patientDetails.age,
-                    weight: patientDetails.weight,
-                    height: patientDetails.height,
-                    disorder: patientDetails.disorder,
-                    description: patientDetails.description,
-                },
-                doctor: {
-                    name: user?.full_name || 'Dr. Unknown',
-                    email: user?.email || 'doctor@hospital.com',
-                    designation: user?.role || 'Doctor',
-                    hospital: user?.hospital || 'Hospital',
-                },
-            });
-            localStorage.setItem('currentSessionId', session.session_id);
-            localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
+        // Generate a demo session ID
+        const sessionId = `demo-${Date.now()}`;
+        localStorage.setItem('currentSessionId', sessionId);
+        localStorage.setItem('patientInfo', JSON.stringify(patientDetails));
 
-            // Check if RunPod is configured
-            if (!runpodApi.isConfigured()) {
-                throw new Error('RunPod is not configured. Please set NEXT_PUBLIC_RUNPOD_ENDPOINT_ID and NEXT_PUBLIC_RUNPOD_API_KEY');
+        if (DEMO_MODE) {
+            // DEMO: Simulate processing with fake progress
+            const steps = [
+                { progress: 10, message: 'Creating session...' },
+                { progress: 25, message: 'Uploading MRI scans...' },
+                { progress: 40, message: 'Initializing AI model...' },
+                { progress: 55, message: 'Running tumor segmentation...' },
+                { progress: 70, message: 'Generating 3D model...' },
+                { progress: 85, message: 'Creating medical report...' },
+                { progress: 100, message: 'Analysis complete!' },
+            ];
+
+            for (const step of steps) {
+                await new Promise(resolve => setTimeout(resolve, 800));
+                setProgress(step.progress);
+                setStatusMessage(step.message);
             }
 
-            setStatusMessage('Sending MRI scans to AI server...');
-            setProgress(15);
-
-            // Submit directly to RunPod (bypasses Vercel size limit)
-            const { jobId } = await runpodApi.submitJob(
-                files,
-                {
-                    name: patientDetails.name || 'Anonymous',
-                    age: patientDetails.age || 'N/A',
-                    id: `PAT-${Date.now()}`,
-                },
-                {
-                    generate_report: true,
-                    tta_enabled: false,
+            // Store demo result with path to pre-made GLB
+            const demoResult = {
+                success: true,
+                glb_url: '/demo_brain_tumor.glb',
+                tumor_volume_ml: 12.45,
+                tumor_volume_percent: 3.2,
+                tumor_location: 'Right frontal lobe',
+                confidence_score: 0.94,
+                patient_name: patientDetails.name || 'Demo Patient',
+                analysis_date: new Date().toISOString(),
+                report: {
+                    summary: 'AI-powered analysis detected a tumor in the right frontal lobe region.',
+                    recommendation: 'Further consultation with a neuro-oncologist is recommended.',
+                    findings: [
+                        'Tumor detected in right frontal lobe',
+                        'Estimated volume: 12.45 ml (3.2% of brain volume)',
+                        'Well-defined margins observed',
+                        'No significant midline shift'
+                    ]
                 }
-            );
+            };
+            localStorage.setItem(`result_${sessionId}`, JSON.stringify(demoResult));
 
-            setStatusMessage('AI is analyzing MRI scans...');
-            setProgress(25);
-
-            // Poll RunPod for status
-            const result = await runpodApi.pollJob(
-                jobId,
-                (status: RunPodJobResponse) => {
-                    switch (status.status) {
-                        case 'IN_QUEUE':
-                            setProgress(30);
-                            setStatusMessage('Waiting for GPU worker...');
-                            break;
-                        case 'IN_PROGRESS':
-                            setProgress(50);
-                            setStatusMessage('AI is analyzing MRI scans...');
-                            break;
-                        case 'COMPLETED':
-                            setProgress(95);
-                            setStatusMessage('Analysis complete!');
-                            break;
-                    }
-                },
-                3000,
-                600000
-            );
-
-            // Store result in localStorage for viewer
-            localStorage.setItem(`result_${session.session_id}`, JSON.stringify(result));
-
-            setProgress(100);
-            setStatusMessage('Analysis complete! Redirecting...');
             setTimeout(() => {
-                router.push(`/viewer?session=${session.session_id}`);
+                router.push(`/viewer?session=${sessionId}&demo=true`);
             }, 500);
-
-        } catch (err) {
-            console.error('Processing error:', err);
-            setError(err instanceof Error ? err.message : 'An error occurred during processing');
-            setShowError(true);
-            setIsProcessing(false);
+            return;
         }
+
+        // Non-demo mode (currently disabled due to size limits)
+        setError('Real processing is currently disabled. Demo mode is active.');
+        setShowError(true);
+        setIsProcessing(false);
     };
 
     const handleCloseError = () => {

@@ -3,11 +3,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { MeshResponse } from '@/services/api';
 
 interface BrainViewerProps {
   meshData: MeshResponse | null;
+  glbUrl?: string | null;  // New prop for GLB file URL
   loading?: boolean;
   showBrain?: boolean;
   showNCR?: boolean;
@@ -26,6 +28,7 @@ const TUMOR_COLORS = {
 
 const BrainViewer: React.FC<BrainViewerProps> = ({
   meshData,
+  glbUrl = null,
   loading = false,
   showBrain = true,
   showNCR = true,
@@ -41,6 +44,7 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
   const controlsRef = useRef<OrbitControls | null>(null);
   const meshGroupRef = useRef<THREE.Group | null>(null);
   const animationIdRef = useRef<number | null>(null);
+  const [glbLoading, setGlbLoading] = useState(false);
 
   const [isInitialized, setIsInitialized] = useState(false);
 
@@ -295,6 +299,66 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Load GLB file when glbUrl is provided
+  useEffect(() => {
+    if (!glbUrl || !meshGroupRef.current || !isInitialized) return;
+
+    setGlbLoading(true);
+
+    // Clear existing meshes
+    const group = meshGroupRef.current;
+    while (group.children.length > 0) {
+      const child = group.children[0];
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) {
+          child.material.dispose();
+        }
+      }
+      group.remove(child);
+    }
+
+    // Load GLB file
+    const loader = new GLTFLoader();
+    loader.load(
+      glbUrl,
+      (gltf) => {
+        const model = gltf.scene;
+        
+        // Center the model
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        model.position.sub(center);
+        
+        // Add to group
+        group.add(model);
+
+        // Auto-fit camera
+        if (cameraRef.current && controlsRef.current) {
+          const size = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const camera = cameraRef.current;
+          const controls = controlsRef.current;
+          
+          camera.position.set(0, 0, maxDim * 2.5);
+          controls.target.set(0, 0, 0);
+          controls.update();
+        }
+
+        setGlbLoading(false);
+      },
+      (progress) => {
+        console.log(`Loading GLB: ${(progress.loaded / progress.total * 100).toFixed(1)}%`);
+      },
+      (error) => {
+        console.error('Error loading GLB:', error);
+        setGlbLoading(false);
+      }
+    );
+  }, [glbUrl, isInitialized]);
+
+  const isLoading = loading || glbLoading;
+
   return (
     <Box
       ref={containerRef}
@@ -306,7 +370,7 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
         overflow: 'hidden',
       }}
     >
-      {loading && (
+      {isLoading && (
         <Box
           sx={{
             position: 'absolute',
@@ -329,7 +393,7 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
         </Box>
       )}
 
-      {!loading && !meshData && (
+      {!isLoading && !meshData && !glbUrl && (
         <Box
           sx={{
             position: 'absolute',
