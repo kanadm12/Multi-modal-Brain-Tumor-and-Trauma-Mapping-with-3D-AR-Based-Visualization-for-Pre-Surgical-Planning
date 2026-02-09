@@ -1,0 +1,45 @@
+# =============================================================================
+# LIGHTWEIGHT RUNPOD DOCKERFILE
+# Uses smaller base image - builds in 15-30 minutes instead of hours
+# =============================================================================
+
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV MODEL_PATH=/app/unet_modified_83_38.pth
+
+WORKDIR /app
+
+# Minimal system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    runpod>=1.6.0 \
+    SimpleITK>=2.3.0 \
+    nibabel>=5.0.0 \
+    scikit-image>=0.21.0 \
+    scipy>=1.10.0 \
+    reportlab>=4.0.0 \
+    trimesh>=4.0.0 \
+    "pyglet<2.0" \
+    aiofiles>=23.0.0
+
+# Copy model file
+COPY unet_modified_83_38.pth .
+
+# Copy application code
+COPY stable_unet3d.py .
+COPY inference_stable.py .
+COPY visualize_3d.py .
+COPY report_generator.py .
+COPY runpod_handler.py .
+
+# Verify model loads
+RUN python -c "import torch; torch.load('unet_modified_83_38.pth', map_location='cpu'); print('✅ Model OK')"
+
+CMD ["python", "-u", "runpod_handler.py"]

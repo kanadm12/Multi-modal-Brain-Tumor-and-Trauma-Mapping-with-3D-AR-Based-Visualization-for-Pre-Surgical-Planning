@@ -1,0 +1,57 @@
+# =============================================================================
+# DOCKER IGNORE - Exclude unnecessary files from build context
+# =============================================================================
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node.js / Frontend (not needed for RunPod)
+ui_design/
+node_modules/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Vercel
+.vercel/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Test data
+test_data/
+tests/
