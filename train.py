@@ -751,6 +751,9 @@ def dice_coefficient(pred, target, smooth=1e-6, return_per_class=False, return_b
         target_regions = compute_brats_regions(target)
         
         brats_dice = {}
+        # DEBUG storage
+        debug_wt_info = {}
+        
         for region_name in ['WT', 'TC', 'ET']:
             pred_r = torch.tensor(pred_regions[region_name].flatten(), dtype=torch.float32)
             target_r = torch.tensor(target_regions[region_name].flatten(), dtype=torch.float32)
@@ -759,17 +762,30 @@ def dice_coefficient(pred, target, smooth=1e-6, return_per_class=False, return_b
             denominator = torch.sum(pred_r) + torch.sum(target_r)
             dice = (2.0 * intersection + smooth) / (denominator + smooth)
             brats_dice[region_name] = dice.item()
+            
+            # Store WT debug info when computing WT
+            if region_name == 'WT':
+                debug_wt_info = {
+                    'pred_sum': torch.sum(pred_r).item(),
+                    'target_sum': torch.sum(target_r).item(),
+                    'inter': intersection.item(),
+                    'dice': dice.item()
+                }
         
-        # DEBUG: Log first sample of each epoch to diagnose WT stuck at 0.022
+        # DEBUG: Log once per run (now with correct WT values)
         if not hasattr(dice_coefficient, '_debug_logged'):
             dice_coefficient._debug_logged = True
             import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"DEBUG BraTS regions - pred unique: {np.unique(pred.cpu().numpy() if isinstance(pred, torch.Tensor) else pred)}")
-            logger.info(f"DEBUG pred counts: NCR={np.sum(pred_regions['TC'] & ~pred_regions['ET'])}, ED={np.sum(pred_regions['WT'] & ~pred_regions['TC'])}, ET={np.sum(pred_regions['ET'])}")  
-            logger.info(f"DEBUG target counts: NCR={np.sum(target_regions['TC'] & ~target_regions['ET'])}, ED={np.sum(target_regions['WT'] & ~target_regions['TC'])}, ET={np.sum(target_regions['ET'])}")
-            logger.info(f"DEBUG WT: pred={torch.sum(pred_r).item():.0f}, target={torch.sum(target_r).item():.0f}, inter={intersection.item():.0f}, dice={brats_dice['WT']:.4f}")
-            logger.info(f"DEBUG per_class ED={per_class.get('ED', 'N/A'):.4f}, BraTS WT={brats_dice['WT']:.4f}")
+            dbg_logger = logging.getLogger(__name__)
+            pred_np = pred.cpu().numpy() if isinstance(pred, torch.Tensor) else pred
+            target_np = target.cpu().numpy() if isinstance(target, torch.Tensor) else target
+            
+            dbg_logger.info(f"DEBUG VERIFICATION:")
+            dbg_logger.info(f"  pred classes:   BG={np.sum(pred_np==0)}, NCR={np.sum(pred_np==1)}, ED={np.sum(pred_np==2)}, ET={np.sum(pred_np==3)}")
+            dbg_logger.info(f"  target classes: BG={np.sum(target_np==0)}, NCR={np.sum(target_np==1)}, ED={np.sum(target_np==2)}, ET={np.sum(target_np==3)}")
+            dbg_logger.info(f"  WT regions: pred={debug_wt_info['pred_sum']:.0f}, target={debug_wt_info['target_sum']:.0f}")
+            dbg_logger.info(f"  WT dice: {debug_wt_info['dice']:.4f} (inter={debug_wt_info['inter']:.0f})")
+            dbg_logger.info(f"  Per-class dice: NCR={per_class['NCR']:.4f}, ED={per_class['ED']:.4f}, ET={per_class['ET']:.4f}")
         
         # BraTS mean uses only the 3 regions
         brats_mean = np.mean([brats_dice['WT'], brats_dice['TC'], brats_dice['ET']])
