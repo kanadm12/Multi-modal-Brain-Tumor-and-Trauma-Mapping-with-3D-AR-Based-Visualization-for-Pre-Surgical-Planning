@@ -159,7 +159,8 @@ else:
 # Data Loading Configuration
 # Set USE_PREPROCESSED=True env var if you have preprocessed NPZ files
 USE_PREPROCESSED = os.environ.get('USE_PREPROCESSED', 'false').lower() == 'true'
-NUM_WORKERS = 8  # Workers per DataLoader - RunPod has good CPUs
+# NUM_WORKERS can cause SIGSEGV on ROCm with DDP - reduce if issues occur
+NUM_WORKERS = int(os.environ.get('NUM_WORKERS', '4'))  # Default 4, set to 0 for debugging
 
 # Input/Output Configuration
 CROP_SIZE = (224, 256, 224)  # Large input size for high VRAM GPUs
@@ -301,12 +302,15 @@ def setup_ddp(rank, world_size):
     
     Uses setdefault to allow Vertex AI and other platforms to override
     MASTER_ADDR and MASTER_PORT via environment variables.
+    
+    For ROCm (AMD GPUs), uses RCCL backend (called via 'nccl' in PyTorch).
+    Falls back to 'gloo' if NCCL/RCCL fails.
     """
     # Use setdefault so Vertex AI can override these for multi-node training
     os.environ.setdefault('MASTER_ADDR', 'localhost')
     os.environ.setdefault('MASTER_PORT', '12355')
     
-    # Get rank and local_rank from environment if available (Vertex AI sets these)
+    # Get rank and local_rank from environment if available (torchrun sets these)
     if 'RANK' in os.environ:
         rank = int(os.environ['RANK'])
     if 'LOCAL_RANK' in os.environ:
@@ -314,7 +318,21 @@ def setup_ddp(rank, world_size):
     else:
         local_rank = rank
     
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # ROCm-specific environment variables
+    if CLOUD_PLATFORM == 'runpod' or GPU_TYPE == 'MI300X':
+        os.environ.setdefault('HSA_OVERRIDE_GFX_VERSION', '11.0.0')
+        # Reduce RCCL timeout for faster failure detection
+        os.environ.setdefault('RCCL_TIMEOUT', '1800')
+    
+    # Select backend: try nccl/rccl first, fallback to gloo
+    backend = os.environ.get('DIST_BACKEND', 'nccl')
+    
+    try:
+        dist.init_process_group(backend, rank=rank, world_size=world_size)
+    except Exception as e:
+        logger.warning(f"Failed to init with {backend}: {e}. Trying gloo backend...")
+        dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    
     torch.cuda.set_device(local_rank)
 
 def cleanup_ddp():
