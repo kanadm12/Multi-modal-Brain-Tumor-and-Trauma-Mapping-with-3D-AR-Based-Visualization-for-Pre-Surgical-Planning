@@ -226,9 +226,10 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
-# Class weights for loss - OPTIMIZED based on your baseline performance
-# NCR was weakest (78.3%), ED strongest (86.6%), ET good (85.2%)
-CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.3])  # Prioritize NCR (weakest class)
+# Class weights for loss - AGGRESSIVE NCR FOCUS
+# NCR was at 0.00 dice (not learning at all!), ED=0.74, ET=0.35
+# Increase NCR weight dramatically to force model to learn this class
+CLASS_WEIGHTS = torch.tensor([0.0, 3.0, 1.0, 1.5])  # NCR gets 3x weight (was 1.5)
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
@@ -2824,10 +2825,13 @@ def run_cross_validation(rank=0, world_size=1):
             brats_mean_hd95 = np.mean([brats_hd95['WT'], brats_hd95['TC'], brats_hd95['ET']])
             
             if rank == 0:
-                # Console logging with BraTS region metrics (THE IMPORTANT ONES!)
+                # Console logging with BOTH per-class AND BraTS region metrics
+                # Per-class shows exactly which class is failing
+                mean_class_dice = np.mean([per_class_dice['NCR'], per_class_dice['ED'], per_class_dice['ET']])
                 logger.info(f"E{epoch+1:3d} | Loss: {train_loss:.4f} | "
-                           f"BraTS Dice: {brats_mean_dice:.4f} (WT:{brats_dice['WT']:.3f} TC:{brats_dice['TC']:.3f} ET:{brats_dice['ET']:.3f}) | "
-                           f"HD95: {brats_mean_hd95:.1f}mm | LR: {current_lr:.2e} | {epoch_time:.1f}s")
+                           f"Class Dice: {mean_class_dice:.3f} (NCR:{per_class_dice['NCR']:.3f} ED:{per_class_dice['ED']:.3f} ET:{per_class_dice['ET']:.3f}) | "
+                           f"BraTS: {brats_mean_dice:.3f} (WT:{brats_dice['WT']:.3f} TC:{brats_dice['TC']:.3f}) | "
+                           f"LR: {current_lr:.2e} | {epoch_time:.1f}s")
                 
                 # ============================================================
                 # COMPREHENSIVE TENSORBOARD LOGGING - PRODUCTION GRADE
