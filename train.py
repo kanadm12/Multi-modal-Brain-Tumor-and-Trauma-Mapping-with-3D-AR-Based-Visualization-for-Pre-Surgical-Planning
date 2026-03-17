@@ -1894,8 +1894,8 @@ def run_cross_validation(rank=0, world_size=1):
         train_ids = patient_ids[train_idx]
         test_ids = patient_ids[test_idx]
         
-        # Val split: 10% of training data (was 20%, now more data for training)
-        val_split = int(len(train_ids) * 0.1)
+        # Val split: 15% of training data for better model selection with 700 patients
+        val_split = int(len(train_ids) * 0.15)
         val_ids = train_ids[:val_split]
         train_ids = train_ids[val_split:]
         
