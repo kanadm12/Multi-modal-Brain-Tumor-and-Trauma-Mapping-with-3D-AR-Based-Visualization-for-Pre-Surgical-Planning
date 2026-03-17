@@ -226,10 +226,10 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
-# Class weights for loss - AGGRESSIVE NCR FOCUS
-# NCR was at 0.00 dice (not learning at all!), ED=0.74, ET=0.35
-# Increase NCR weight dramatically to force model to learn this class
-CLASS_WEIGHTS = torch.tensor([0.0, 3.0, 1.0, 1.5])  # NCR gets 3x weight (was 1.5)
+# Class weights for loss - BALANCED (3.0 NCR caused over-prediction!)
+# High NCR weight made model predict NCR everywhere, destroying WT dice
+# Solution: balanced weights + FocalCE to learn hard examples without over-prediction
+CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.5])  # Balanced: NCR and ET at 1.5x
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
@@ -1189,6 +1189,56 @@ class FocalTverskyLoss(nn.Module):
         
         return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device, requires_grad=True)
 
+
+class FocalCrossEntropyLoss(nn.Module):
+    """Focal Cross Entropy Loss - Prevents over-prediction of minority classes
+    
+    Key insight: High class weights cause over-prediction because the model
+    gets high reward for predicting the minority class anywhere.
+    
+    Focal loss DOWN-WEIGHTS easy/confident predictions, making the model
+    focus on hard examples without predicting the class everywhere.
+    
+    gamma=2.0 is recommended for medical imaging (reduces easy sample gradient by ~25x)
+    """
+    def __init__(self, weight=None, gamma=2.0, label_smoothing=0.1, reduction='none'):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+        self.reduction = reduction
+    
+    def forward(self, pred, target):
+        # Get log softmax for numerical stability
+        log_probs = F.log_softmax(pred, dim=1)
+        probs = torch.exp(log_probs)
+        
+        # Get probability of true class for each voxel
+        # target: (B, D, H, W), pred: (B, C, D, H, W)
+        ce_loss = F.cross_entropy(
+            pred, target, 
+            weight=self.weight, 
+            label_smoothing=self.label_smoothing,
+            reduction='none'
+        )
+        
+        # Get probability at target class
+        target_probs = probs.gather(1, target.unsqueeze(1)).squeeze(1)
+        
+        # Focal weight: (1 - p_target)^gamma
+        # High p_target (easy sample) -> low weight
+        # Low p_target (hard sample) -> high weight
+        focal_weight = (1 - target_probs) ** self.gamma
+        
+        focal_loss = focal_weight * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss  # 'none' - for OHEM
+
+
 class CombinedLoss(nn.Module):
     """Ultimate Combined Loss for BraTS Segmentation
     
@@ -1197,7 +1247,7 @@ class CombinedLoss(nn.Module):
     - Boundary: GPU-accelerated edge focus for HD95 (0.20)
     - Tversky/FocalTversky: Class imbalance handling (0.15)
     - Lovasz: IoU optimization (0.10)
-    - CE with label smoothing: Calibration & stability (0.10)
+    - FocalCE: Prevents over-prediction of minority classes (0.10)
     
     Expected improvement over baseline: +5-8% Dice, -30-50% HD95
     """
@@ -1217,9 +1267,11 @@ class CombinedLoss(nn.Module):
             alpha=0.7, beta=0.3, gamma=0.75, class_weights=class_weights
         )  # Better for class imbalance
         self.lovasz_loss = LovaszSoftmaxLoss(weights=class_weights)
-        self.ce_loss = nn.CrossEntropyLoss(
+        # FocalCE instead of regular CE - prevents over-prediction of minority classes
+        self.ce_loss = FocalCrossEntropyLoss(
             weight=class_weights, 
-            label_smoothing=label_smoothing,  # Better calibration
+            gamma=2.0,  # Focal parameter: reduces easy sample gradient by ~25x
+            label_smoothing=label_smoothing,
             reduction='none'  # For OHEM support
         )
         
