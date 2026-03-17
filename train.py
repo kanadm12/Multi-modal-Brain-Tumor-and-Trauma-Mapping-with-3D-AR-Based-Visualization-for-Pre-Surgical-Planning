@@ -125,7 +125,7 @@ class WarmupScheduler:
 # CLOUD PLATFORM SELECTION
 # =============================================================================
 # Set CLOUD_PLATFORM environment variable to switch between platforms:
-# - "runpod": RunPod with AMD MI300X GPUs (ROCm)
+# - "runpod": RunPod with NVIDIA A100 GPUs (CUDA)
 # - "vertex_ai": GCP Vertex AI with NVIDIA A100/H100 GPUs (CUDA)
 # - "local": Local development
 CLOUD_PLATFORM = os.environ.get('CLOUD_PLATFORM', 'runpod').lower()
@@ -159,8 +159,7 @@ else:
 # Data Loading Configuration
 # Set USE_PREPROCESSED=True env var if you have preprocessed NPZ files
 USE_PREPROCESSED = os.environ.get('USE_PREPROCESSED', 'false').lower() == 'true'
-# NUM_WORKERS can cause SIGSEGV on ROCm with DDP - reduce if issues occur
-NUM_WORKERS = int(os.environ.get('NUM_WORKERS', '4'))  # Default 4, set to 0 for debugging
+NUM_WORKERS = int(os.environ.get('NUM_WORKERS', '8'))  # 8 workers for NVIDIA GPUs
 
 # Input/Output Configuration
 CROP_SIZE = (224, 256, 224)  # Large input size for high VRAM GPUs
@@ -181,8 +180,8 @@ if CLOUD_PLATFORM == 'vertex_ai':
     # A100 80GB: Enable gradient checkpointing for memory safety
     USE_GRADIENT_CHECKPOINTING = True
 elif CLOUD_PLATFORM == 'runpod':
-    # MI300X 192GB: Plenty of memory, no checkpointing needed
-    USE_GRADIENT_CHECKPOINTING = False
+    # A100 80GB: Enable gradient checkpointing for memory safety
+    USE_GRADIENT_CHECKPOINTING = True
 else:
     USE_GRADIENT_CHECKPOINTING = True  # Default: enable for safety
 
@@ -192,9 +191,9 @@ if CLOUD_PLATFORM == 'vertex_ai':
     BATCH_SIZE = 4  # Per GPU (4 GPUs = 16 total batch size)
     ACCUMULATION_STEPS = 4  # Effective batch size = 64 (4 x 4 x 4)
 elif CLOUD_PLATFORM == 'runpod':
-    # 4x MI300X 192GB on RunPod - MAXIMUM UTILIZATION
-    BATCH_SIZE = 12  # Per GPU (4 GPUs = 48 total batch size)
-    ACCUMULATION_STEPS = 2  # Effective batch size = 96 (12 x 4 x 2)
+    # 4x A100 80GB on RunPod
+    BATCH_SIZE = 4  # Per GPU (4 GPUs = 16 total batch size)
+    ACCUMULATION_STEPS = 4  # Effective batch size = 64 (4 x 4 x 4)
 else:
     # Local/other - conservative settings
     BATCH_SIZE = 2
@@ -260,7 +259,7 @@ WORLD_SIZE = int(os.environ.get('WORLD_SIZE', 4))  # Auto-detect from environmen
 if CLOUD_PLATFORM == 'vertex_ai':
     GPU_TYPE = "A100"  # NVIDIA A100 80GB (CUDA) on Vertex AI
 elif CLOUD_PLATFORM == 'runpod':
-    GPU_TYPE = "MI300X"  # AMD Instinct MI300X (ROCm) on RunPod
+    GPU_TYPE = "A100"  # NVIDIA A100 80GB (CUDA) on RunPod
 else:
     GPU_TYPE = "CUDA"  # Generic CUDA GPU
 
@@ -298,19 +297,11 @@ def set_seed(seed=42):
         torch.backends.cudnn.benchmark = False
 
 def setup_ddp(rank, world_size):
-    """Initialize distributed training
-    
-    Uses setdefault to allow Vertex AI and other platforms to override
-    MASTER_ADDR and MASTER_PORT via environment variables.
-    
-    For ROCm (AMD GPUs), uses RCCL backend (called via 'nccl' in PyTorch).
-    Falls back to 'gloo' if NCCL/RCCL fails.
-    """
-    # Use setdefault so Vertex AI can override these for multi-node training
+    """Initialize distributed training for NVIDIA GPUs with NCCL backend"""
     os.environ.setdefault('MASTER_ADDR', 'localhost')
     os.environ.setdefault('MASTER_PORT', '12355')
     
-    # Get rank and local_rank from environment if available (torchrun sets these)
+    # Get rank and local_rank from environment (torchrun sets these)
     if 'RANK' in os.environ:
         rank = int(os.environ['RANK'])
     if 'LOCAL_RANK' in os.environ:
@@ -318,21 +309,8 @@ def setup_ddp(rank, world_size):
     else:
         local_rank = rank
     
-    # ROCm-specific environment variables
-    if CLOUD_PLATFORM == 'runpod' or GPU_TYPE == 'MI300X':
-        os.environ.setdefault('HSA_OVERRIDE_GFX_VERSION', '11.0.0')
-        # Reduce RCCL timeout for faster failure detection
-        os.environ.setdefault('RCCL_TIMEOUT', '1800')
-    
-    # Select backend: try nccl/rccl first, fallback to gloo
-    backend = os.environ.get('DIST_BACKEND', 'nccl')
-    
-    try:
-        dist.init_process_group(backend, rank=rank, world_size=world_size)
-    except Exception as e:
-        logger.warning(f"Failed to init with {backend}: {e}. Trying gloo backend...")
-        dist.init_process_group("gloo", rank=rank, world_size=world_size)
-    
+    # Use NCCL backend for NVIDIA GPUs (best performance)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(local_rank)
 
 def cleanup_ddp():
@@ -1858,8 +1836,8 @@ def run_cross_validation(rank=0, world_size=1):
         logger.info("STARTING 3-FOLD CROSS-VALIDATION")
         logger.info("=" * 80)
         logger.info(f"Hardware Configuration:")
-        logger.info(f"  GPU Type: {GPU_TYPE} (AMD ROCm)")
-        logger.info(f"  Multi-GPU: {USE_MULTI_GPU} ({world_size} GPUs x 192GB = {world_size * 192}GB total VRAM)")
+        logger.info(f"  GPU Type: {GPU_TYPE} (NVIDIA CUDA)")
+        logger.info(f"  Multi-GPU: {USE_MULTI_GPU} ({world_size} GPUs x 80GB = {world_size * 80}GB total VRAM)")
         logger.info(f"  Device: {device}")
         logger.info(f"Model Configuration:")
         logger.info(f"  Input Size: {CROP_SIZE}")
@@ -2323,8 +2301,8 @@ if __name__ == "__main__":
             logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING - TORCHRUN")
             logger.info(f"Target: 90-95% Dice Score")
             logger.info(f"Platform: {CLOUD_PLATFORM.upper()}")
-            logger.info(f"GPUs: {world_size}x {GPU_TYPE} 192GB")
-            logger.info(f"Total VRAM: {world_size * 192}GB | Effective Batch: {BATCH_SIZE * ACCUMULATION_STEPS * world_size}")
+            logger.info(f"GPUs: {world_size}x {GPU_TYPE} 80GB")
+            logger.info(f"Total VRAM: {world_size * 80}GB | Effective Batch: {BATCH_SIZE * ACCUMULATION_STEPS * world_size}")
             logger.info(f"TensorBoard: {TENSORBOARD_DIR}")
             logger.info(f"Checkpoints: {MODEL_SAVE_DIR}")
             logger.info(f"Resume Training: {RESUME_TRAINING}")
