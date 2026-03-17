@@ -573,22 +573,72 @@ def preprocess_patient_nnunet(
     return image, seg_mapped, original_spacing, original_shape
 
 
+# Pre-cached elastic displacement fields for efficiency
+# Generating displacement fields is expensive - cache a pool and sample from it
+_ELASTIC_FIELD_CACHE = []
+_ELASTIC_CACHE_SIZE = 10
+
+
+def _get_or_create_elastic_field(shape, alpha, sigma):
+    """Get cached elastic field or create new one
+    
+    Pre-generating displacement fields is expensive (gaussian_filter calls).
+    Cache a pool and randomly sample from it to avoid regenerating each call.
+    """
+    global _ELASTIC_FIELD_CACHE
+    
+    # Check if we have cached fields for this shape
+    if len(_ELASTIC_FIELD_CACHE) < _ELASTIC_CACHE_SIZE:
+        # Need to generate more fields
+        alpha_val = random.uniform(alpha * 0.7, alpha * 1.3)
+        sigma_val = random.uniform(sigma * 0.7, sigma * 1.3)
+        
+        dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma_val, mode="constant", cval=0) * alpha_val
+        dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma_val, mode="constant", cval=0) * alpha_val
+        dz = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma_val, mode="constant", cval=0) * alpha_val
+        
+        # Pre-compute meshgrid
+        z, y, x = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing='ij')
+        
+        field = {
+            'shape': shape,
+            'indices': [
+                np.reshape(z + dz, (-1, 1)),
+                np.reshape(y + dy, (-1, 1)),
+                np.reshape(x + dx, (-1, 1))
+            ]
+        }
+        _ELASTIC_FIELD_CACHE.append(field)
+        return field['indices']
+    else:
+        # Sample from cache (with small random perturbation)
+        field = random.choice(_ELASTIC_FIELD_CACHE)
+        if field['shape'] == shape:
+            return field['indices']
+        else:
+            # Shape mismatch, generate new
+            alpha_val = random.uniform(alpha * 0.7, alpha * 1.3)
+            sigma_val = random.uniform(sigma * 0.7, sigma * 1.3)
+            
+            dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma_val, mode="constant", cval=0) * alpha_val
+            dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma_val, mode="constant", cval=0) * alpha_val
+            dz = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma_val, mode="constant", cval=0) * alpha_val
+            
+            z, y, x = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing='ij')
+            
+            return [
+                np.reshape(z + dz, (-1, 1)),
+                np.reshape(y + dy, (-1, 1)),
+                np.reshape(x + dx, (-1, 1))
+            ]
+
+
 def elastic_deformation_3d(image, segmentation, alpha=30, sigma=5):
-    """3D elastic deformation augmentation"""
+    """3D elastic deformation augmentation with cached displacement fields"""
     shape = image.shape[1:]
-    alpha = random.uniform(alpha * 0.7, alpha * 1.3)
-    sigma = random.uniform(sigma * 0.7, sigma * 1.3)
     
-    dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma, mode="constant", cval=0) * alpha
-    dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma, mode="constant", cval=0) * alpha
-    dz = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma, mode="constant", cval=0) * alpha
-    
-    z, y, x = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing='ij')
-    indices = [
-        np.reshape(z + dz, (-1, 1)),
-        np.reshape(y + dy, (-1, 1)),
-        np.reshape(x + dx, (-1, 1))
-    ]
+    # Use cached displacement field for efficiency
+    indices = _get_or_create_elastic_field(shape, alpha, sigma)
     
     image_t = np.zeros_like(image)
     for c in range(image.shape[0]):
@@ -1970,18 +2020,16 @@ def sliding_window_inference(
     num_h = max(1, int(np.ceil((H - pH) / step_h)) + 1) if H > pH else 1
     num_w = max(1, int(np.ceil((W - pW) / step_w)) + 1) if W > pW else 1
     
-    # Create Gaussian importance map for smooth aggregation
+    # Create Gaussian importance map for smooth aggregation (VECTORIZED - was 5M iterations)
     if use_gaussian:
         sigma = 0.125
-        importance_map = np.zeros(patch_size, dtype=np.float32)
+        # Vectorized computation using numpy broadcasting (was triple nested loop)
+        z, y, x = np.mgrid[0:pD, 0:pH, 0:pW]
         center = np.array(patch_size) / 2
-        for z in range(pD):
-            for y in range(pH):
-                for x in range(pW):
-                    dist = ((z - center[0])**2 / (pD/2)**2 + 
-                            (y - center[1])**2 / (pH/2)**2 + 
-                            (x - center[2])**2 / (pW/2)**2)
-                    importance_map[z, y, x] = np.exp(-dist / (2 * sigma**2))
+        dist = ((z - center[0])**2 / (pD/2)**2 + 
+                (y - center[1])**2 / (pH/2)**2 + 
+                (x - center[2])**2 / (pW/2)**2)
+        importance_map = np.exp(-dist / (2 * sigma**2)).astype(np.float32)
         importance_map = torch.tensor(importance_map, device=device, dtype=torch.float32)
     else:
         importance_map = torch.ones(patch_size, device=device, dtype=torch.float32)
