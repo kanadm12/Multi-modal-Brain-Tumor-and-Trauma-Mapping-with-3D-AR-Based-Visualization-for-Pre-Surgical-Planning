@@ -143,7 +143,8 @@ if CLOUD_PLATFORM == 'vertex_ai':
 elif CLOUD_PLATFORM == 'runpod':
     # RunPod workspace configuration
     WORKSPACE_DIR = "/workspace"
-    DATA_DIR = os.path.join(WORKSPACE_DIR, "dataset")
+    # DATA_DIR can be overridden via environment variable for nested dataset paths
+    DATA_DIR = os.environ.get('DATA_DIR', os.path.join(WORKSPACE_DIR, "dataset"))
     OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs")
     MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "checkpoints")
     TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard")
@@ -156,7 +157,8 @@ else:
     TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard")
 
 # Data Loading Configuration
-USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
+# Set USE_PREPROCESSED=True env var if you have preprocessed NPZ files
+USE_PREPROCESSED = os.environ.get('USE_PREPROCESSED', 'false').lower() == 'true'
 NUM_WORKERS = 8  # Workers per DataLoader - RunPod has good CPUs
 
 # Input/Output Configuration

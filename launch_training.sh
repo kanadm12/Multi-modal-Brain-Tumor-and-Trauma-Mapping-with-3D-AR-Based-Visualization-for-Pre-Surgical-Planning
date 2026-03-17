@@ -35,14 +35,17 @@ export NCCL_P2P_DISABLE=0
 # DIRECTORY SETUP
 # =============================================================================
 WORKSPACE_DIR="/workspace"
-SCRIPT_DIR="$WORKSPACE_DIR"
-DATA_DIR="$WORKSPACE_DIR/dataset"
+# Script is in the repo subdirectory
+SCRIPT_DIR="$WORKSPACE_DIR/Multi-modal-Brain-Tumor-and-Trauma-Mapping-with-3D-AR-Based-Visualization-for-Pre-Surgical-Planning"
+# Dataset path - update this if your data is in a nested folder
+export DATA_DIR="${DATA_DIR:-$WORKSPACE_DIR/dataset/beproject/dataset/dataset}"
 OUTPUT_DIR="$WORKSPACE_DIR/outputs"
 CHECKPOINT_DIR="$WORKSPACE_DIR/checkpoints"
 TENSORBOARD_DIR="$WORKSPACE_DIR/tensorboard"
 
 echo "📁 Directory Configuration:"
 echo "  Workspace: $WORKSPACE_DIR"
+echo "  Script Dir: $SCRIPT_DIR"
 echo "  Dataset: $DATA_DIR"
 echo "  Outputs: $OUTPUT_DIR"
 echo "  Checkpoints: $CHECKPOINT_DIR"
@@ -116,10 +119,17 @@ echo ""
 # START TENSORBOARD (Background)
 # =============================================================================
 echo "📈 Starting TensorBoard on port 6006..."
-tensorboard --logdir="$TENSORBOARD_DIR" --host=0.0.0.0 --port=6006 &
+# Use nohup and redirect errors, continue even if TensorBoard fails
+nohup tensorboard --logdir="$TENSORBOARD_DIR" --host=0.0.0.0 --port=6006 > /tmp/tensorboard.log 2>&1 &
 TENSORBOARD_PID=$!
-echo "✅ TensorBoard running (PID: $TENSORBOARD_PID)"
-echo "   Access at: http://<your-pod-ip>:6006"
+sleep 2
+if kill -0 $TENSORBOARD_PID 2>/dev/null; then
+    echo "✅ TensorBoard running (PID: $TENSORBOARD_PID)"
+    echo "   Access at: http://<your-pod-ip>:6006"
+else
+    echo "⚠️  TensorBoard failed to start (non-critical, training will continue)"
+    echo "   You can start it manually later: tensorboard --logdir=$TENSORBOARD_DIR --port=6006"
+fi
 echo ""
 
 # =============================================================================
