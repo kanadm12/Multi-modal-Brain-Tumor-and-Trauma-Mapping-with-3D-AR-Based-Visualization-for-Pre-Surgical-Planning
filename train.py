@@ -760,6 +760,17 @@ def dice_coefficient(pred, target, smooth=1e-6, return_per_class=False, return_b
             dice = (2.0 * intersection + smooth) / (denominator + smooth)
             brats_dice[region_name] = dice.item()
         
+        # DEBUG: Log first sample of each epoch to diagnose WT stuck at 0.022
+        if not hasattr(dice_coefficient, '_debug_logged'):
+            dice_coefficient._debug_logged = True
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"DEBUG BraTS regions - pred unique: {np.unique(pred.cpu().numpy() if isinstance(pred, torch.Tensor) else pred)}")
+            logger.info(f"DEBUG pred counts: NCR={np.sum(pred_regions['TC'] & ~pred_regions['ET'])}, ED={np.sum(pred_regions['WT'] & ~pred_regions['TC'])}, ET={np.sum(pred_regions['ET'])}")  
+            logger.info(f"DEBUG target counts: NCR={np.sum(target_regions['TC'] & ~target_regions['ET'])}, ED={np.sum(target_regions['WT'] & ~target_regions['TC'])}, ET={np.sum(target_regions['ET'])}")
+            logger.info(f"DEBUG WT: pred={torch.sum(pred_r).item():.0f}, target={torch.sum(target_r).item():.0f}, inter={intersection.item():.0f}, dice={brats_dice['WT']:.4f}")
+            logger.info(f"DEBUG per_class ED={per_class.get('ED', 'N/A'):.4f}, BraTS WT={brats_dice['WT']:.4f}")
+        
         # BraTS mean uses only the 3 regions
         brats_mean = np.mean([brats_dice['WT'], brats_dice['TC'], brats_dice['ET']])
     
