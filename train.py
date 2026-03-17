@@ -2232,7 +2232,7 @@ def train_epoch(model, train_loader, optimizer, loss_fn, scaler, device, accumul
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     return avg_loss, loss_components_sum
 
-def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=True, rank=0, return_per_class=False, return_brats_regions=True):
+def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=True, rank=0, return_per_class=False, return_brats_regions=True, skip_hd95=False):
     """Validate for one epoch with BraTS Challenge region metrics
     
     Now computes both per-class AND BraTS region metrics (WT/TC/ET).
@@ -2247,6 +2247,7 @@ def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=
         rank: GPU rank for DDP
         return_per_class: If True, return per-class Dice and HD95 scores
         return_brats_regions: If True, return BraTS region metrics (WT/TC/ET)
+        skip_hd95: If True, skip HD95 computation (MUCH faster for training validation)
     
     Returns:
         Tuple with metrics based on flags:
@@ -2323,31 +2324,40 @@ def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=
                     brats_dice['TC'].append(dice_result['TC'])
                     brats_dice['ET'].append(dice_result['ET_region'])
                 
-                # Get per-class AND BraTS region HD95
-                hd95_per_class, hd95_brats = hausdorff_95(pred_b, target_b, return_brats_regions=True)
-                all_hd95.append(np.mean(hd95_per_class))
-                
-                # Store per-class HD95
-                per_class_hd95['NCR'].append(hd95_per_class[0])
-                per_class_hd95['ED'].append(hd95_per_class[1])
-                per_class_hd95['ET'].append(hd95_per_class[2])
-                
-                # Store BraTS region HD95
-                brats_hd95['WT'].append(hd95_brats['WT'])
-                brats_hd95['TC'].append(hd95_brats['TC'])
-                brats_hd95['ET'].append(hd95_brats['ET'])
+                # HD95 computation is EXPENSIVE (60s/sample) - skip during training
+                if not skip_hd95:
+                    # Get per-class AND BraTS region HD95 (only for final test evaluation)
+                    hd95_per_class, hd95_brats = hausdorff_95(pred_b, target_b, return_brats_regions=True)
+                    all_hd95.append(np.mean(hd95_per_class))
+                    
+                    # Store per-class HD95
+                    per_class_hd95['NCR'].append(hd95_per_class[0])
+                    per_class_hd95['ED'].append(hd95_per_class[1])
+                    per_class_hd95['ET'].append(hd95_per_class[2])
+                    
+                    # Store BraTS region HD95
+                    brats_hd95['WT'].append(hd95_brats['WT'])
+                    brats_hd95['TC'].append(hd95_brats['TC'])
+                    brats_hd95['ET'].append(hd95_brats['ET'])
             
             if all_dice and rank == 0:
                 # Show BraTS region metrics in progress bar
                 wt_dice = np.mean(brats_dice['WT']) if brats_dice['WT'] else 0
                 tc_dice = np.mean(brats_dice['TC']) if brats_dice['TC'] else 0
                 et_dice = np.mean(brats_dice['ET']) if brats_dice['ET'] else 0
-                pbar.set_postfix({
-                    'WT': f'{wt_dice:.3f}',
-                    'TC': f'{tc_dice:.3f}', 
-                    'ET': f'{et_dice:.3f}',
-                    'HD95': f'{np.mean(all_hd95):.1f}'
-                })
+                if skip_hd95:
+                    pbar.set_postfix({
+                        'WT': f'{wt_dice:.3f}',
+                        'TC': f'{tc_dice:.3f}', 
+                        'ET': f'{et_dice:.3f}'
+                    })
+                else:
+                    pbar.set_postfix({
+                        'WT': f'{wt_dice:.3f}',
+                        'TC': f'{tc_dice:.3f}', 
+                        'ET': f'{et_dice:.3f}',
+                        'HD95': f'{np.mean(all_hd95):.1f}'
+                    })
     
     mean_dice = np.mean(all_dice) if all_dice else 0.0
     mean_hd95 = np.mean(all_hd95) if all_hd95 else 0.0
@@ -2710,7 +2720,9 @@ def run_cross_validation(rank=0, world_size=1):
             
             # Validate on ALL GPUs in parallel (4x faster than single GPU)
             # Get per-class AND BraTS region metrics for comprehensive TensorBoard logging
-            val_result = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank, return_per_class=True, return_brats_regions=True)
+            # Skip HD95 during training validation - MUCH faster (~1s vs 60s per sample)
+            # HD95 will be computed on final test evaluation only
+            val_result = validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=False, rank=rank, return_per_class=True, return_brats_regions=True, skip_hd95=True)
             val_dice, val_hd95, per_class_dice, per_class_hd95, brats_dice, brats_hd95 = val_result
             
             # Aggregate validation metrics across all ranks
@@ -2906,7 +2918,8 @@ def run_cross_validation(rank=0, world_size=1):
             model.load_state_dict(checkpoint['model_state_dict'])
         
         # Get full BraTS metrics for test set
-        test_result = validate_epoch(model, test_loader, DEVICE, use_tta=USE_TTA, use_postprocessing=True, return_per_class=True, return_brats_regions=True)
+        # Full evaluation with HD95 on test set (takes longer but needed for final metrics)
+        test_result = validate_epoch(model, test_loader, DEVICE, use_tta=USE_TTA, use_postprocessing=True, return_per_class=True, return_brats_regions=True, skip_hd95=False)
         test_dice, test_hd95, test_per_class_dice, test_per_class_hd95, test_brats_dice, test_brats_hd95 = test_result
         
         # BraTS mean (what matters for leaderboard)
