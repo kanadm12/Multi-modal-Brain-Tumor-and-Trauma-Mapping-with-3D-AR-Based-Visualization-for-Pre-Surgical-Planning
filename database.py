@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load variables from .env file
 
 # MongoDB Configuration from environment variables
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb+srv://Kanad%20M:Kanad1204@cluster0.rrnad.mongodb.net/?appName=Cluster0")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "brats_medical_db")
 
 class MongoDB:

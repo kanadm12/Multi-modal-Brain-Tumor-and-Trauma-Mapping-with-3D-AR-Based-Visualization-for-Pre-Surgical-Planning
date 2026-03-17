@@ -1,0 +1,35 @@
+# =============================================================================
+# TRAINING REQUIREMENTS FOR RUNPOD MI300X (ROCm)
+# 
+# For 4x MI300X 192GB GPUs with AMD ROCm
+# =============================================================================
+
+# Deep Learning - ROCm compatible
+# Note: Install PyTorch with ROCm from: https://pytorch.org/get-started/locally/
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.0
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Medical Imaging
+nibabel>=5.0.0
+SimpleITK>=2.3.0
+
+# Scientific Computing
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+scikit-image>=0.21.0
+pandas>=2.0.0
+
+# Training Utilities
+tqdm>=4.65.0
+tensorboard>=2.14.0
+
+# Visualization (optional)
+matplotlib>=3.7.0
+
+# Configuration
+PyYAML>=6.0
+
+# Logging
+colorama>=0.4.6

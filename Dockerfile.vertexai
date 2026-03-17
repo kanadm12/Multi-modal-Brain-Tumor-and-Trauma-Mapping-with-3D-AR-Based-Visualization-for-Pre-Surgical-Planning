@@ -1,0 +1,47 @@
+# =============================================================================
+# BraTS 3D Segmentation Training - GCP Vertex AI Container
+# Optimized for: 4x NVIDIA A100 80GB (a2-ultragpu-4g machine type)
+# =============================================================================
+
+# Use Google's Deep Learning Container with PyTorch 2.1 and CUDA 12.1
+FROM gcr.io/deeplearning-platform-release/pytorch-gpu.2-1.py310
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CLOUD_PLATFORM=vertex_ai
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies for medical imaging
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+COPY requirements_gcp.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements_gcp.txt
+
+# Copy training scripts
+COPY train.py .
+COPY stable_unet3d.py .
+
+# Copy any additional utility scripts if they exist
+COPY --chown=root:root . /app/
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import torch; print(torch.cuda.is_available())" || exit 1
+
+# Set the entrypoint for Vertex AI training
+# Vertex AI will run this container with the command specified in the training job
+ENTRYPOINT ["python", "train.py"]

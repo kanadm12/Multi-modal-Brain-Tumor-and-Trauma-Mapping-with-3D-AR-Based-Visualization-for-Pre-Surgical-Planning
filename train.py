@@ -121,36 +121,81 @@ class WarmupScheduler:
 # CONFIGURATION
 # ============================================================================
 
-# Paths - Configured for RunPod environment
-WORKSPACE_DIR = "/workspace"  # RunPod workspace root
-DATA_DIR = os.path.join(WORKSPACE_DIR, "dataset")  # Downloaded from Azure
-OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs")
-MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "checkpoints")
-TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard")
+# =============================================================================
+# CLOUD PLATFORM SELECTION
+# =============================================================================
+# Set CLOUD_PLATFORM environment variable to switch between platforms:
+# - "runpod": RunPod with AMD MI300X GPUs (ROCm)
+# - "vertex_ai": GCP Vertex AI with NVIDIA A100/H100 GPUs (CUDA)
+# - "local": Local development
+CLOUD_PLATFORM = os.environ.get('CLOUD_PLATFORM', 'runpod').lower()
+
+# =============================================================================
+# PATHS - Auto-configured based on platform
+# =============================================================================
+if CLOUD_PLATFORM == 'vertex_ai':
+    # Vertex AI provides these environment variables automatically
+    WORKSPACE_DIR = os.environ.get('AIP_STORAGE_URI', '/gcs/brats-training')
+    DATA_DIR = os.environ.get('AIP_TRAINING_DATA_URI', os.path.join(WORKSPACE_DIR, 'dataset'))
+    OUTPUT_DIR = os.environ.get('AIP_MODEL_DIR', os.path.join(WORKSPACE_DIR, 'outputs'))
+    MODEL_SAVE_DIR = os.environ.get('AIP_CHECKPOINT_DIR', os.path.join(WORKSPACE_DIR, 'checkpoints'))
+    TENSORBOARD_DIR = os.environ.get('AIP_TENSORBOARD_LOG_DIR', os.path.join(WORKSPACE_DIR, 'tensorboard'))
+elif CLOUD_PLATFORM == 'runpod':
+    # RunPod workspace configuration
+    WORKSPACE_DIR = "/workspace"
+    DATA_DIR = os.path.join(WORKSPACE_DIR, "dataset")
+    OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs")
+    MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "checkpoints")
+    TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard")
+else:
+    # Local development
+    WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(WORKSPACE_DIR, "dataset")
+    OUTPUT_DIR = os.path.join(WORKSPACE_DIR, "outputs")
+    MODEL_SAVE_DIR = os.path.join(WORKSPACE_DIR, "checkpoints")
+    TENSORBOARD_DIR = os.path.join(WORKSPACE_DIR, "tensorboard")
 
 # Data Loading Configuration
 USE_PREPROCESSED = True  # Use preprocessed NPZ format (10-50x faster)
 NUM_WORKERS = 8  # Workers per DataLoader - RunPod has good CPUs
 
-# Input/Output Configuration - Optimized for MI300X 192GB
-CROP_SIZE = (224, 256, 224)  # Larger input size for MI300X 192GB VRAM
+# Input/Output Configuration
+CROP_SIZE = (224, 256, 224)  # Large input size for high VRAM GPUs
 NUM_CLASSES = 4  # Background + NCR + ED + ET
 IN_CHANNELS = 4  # T1, T1c, T2, FLAIR
 N_FOLDS = 3  # 3-fold cross-validation
 
-# Model Architecture - OPTIMIZED FOR 4x MI300X 192GB (AMD ROCm)
-MODEL_FILTERS = [64, 128, 256, 512, 1024]  # Large capacity - MI300X handles this easily
+# Model Architecture - OPTIMIZED FOR HIGH-END GPUs
+MODEL_FILTERS = [64, 128, 256, 512, 1024]  # Large capacity model
 USE_ATTENTION = True
 ATTENTION_TYPE = 'transformer'  # 'transformer' or 'lightweight'
 NUM_ATTENTION_HEADS = 8
-TRANSFORMER_DEPTH = 4  # MI300X 192GB can handle depth 4 (increased from 3)
+TRANSFORMER_DEPTH = 4  # Deep transformer bottleneck
 DROPOUT_RATE = 0.12  # Slightly reduced for larger batch sizes
-USE_GRADIENT_CHECKPOINTING = False  # MI300X 192GB has plenty of memory
 
-# Training Hyperparameters - OPTIMIZED FOR 4x MI300X 192GB
-# MI300X has 2.4x more VRAM than A100 80GB - leverage it!
-BATCH_SIZE = 8  # Per GPU (4 GPUs = 32 total batch size) - doubled from A100
-ACCUMULATION_STEPS = 2  # Effective batch size = 64 (8 x 4 x 2)
+# Platform-specific model settings
+if CLOUD_PLATFORM == 'vertex_ai':
+    # A100 80GB: Enable gradient checkpointing for memory safety
+    USE_GRADIENT_CHECKPOINTING = True
+elif CLOUD_PLATFORM == 'runpod':
+    # MI300X 192GB: Plenty of memory, no checkpointing needed
+    USE_GRADIENT_CHECKPOINTING = False
+else:
+    USE_GRADIENT_CHECKPOINTING = True  # Default: enable for safety
+
+# Training Hyperparameters - Platform optimized
+if CLOUD_PLATFORM == 'vertex_ai':
+    # 4x A100 80GB on Vertex AI
+    BATCH_SIZE = 4  # Per GPU (4 GPUs = 16 total batch size)
+    ACCUMULATION_STEPS = 4  # Effective batch size = 64 (4 x 4 x 4)
+elif CLOUD_PLATFORM == 'runpod':
+    # 4x MI300X 192GB on RunPod - MAXIMUM UTILIZATION
+    BATCH_SIZE = 12  # Per GPU (4 GPUs = 48 total batch size)
+    ACCUMULATION_STEPS = 2  # Effective batch size = 96 (12 x 4 x 2)
+else:
+    # Local/other - conservative settings
+    BATCH_SIZE = 2
+    ACCUMULATION_STEPS = 8  # Effective batch size = 16
 EPOCHS = 300  # Reduced from 500 - early stopping will handle convergence
 INITIAL_LR = 3e-4  # Higher LR for larger effective batch size (sqrt scaling)
 WEIGHT_DECAY = 1e-5  # Reduced - prevents over-regularization
@@ -165,8 +210,8 @@ WARMUP_EPOCHS = 30  # Extended warmup - critical for transformer bottleneck
 USE_GRADIENT_CLIPPING = True
 GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 
-# Resume Training
-RESUME_TRAINING = False  # Set to True to resume from checkpoint
+# Resume Training - Enable for RunPod (auto-resumes on pod restart)
+RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
 # Class weights for loss - OPTIMIZED based on your baseline performance
@@ -205,10 +250,16 @@ OHEM_RATIO = 0.7  # Keep 70% hardest pixels in loss
 # Label Smoothing for better calibration
 LABEL_SMOOTHING = 0.1
 
-# Multi-GPU Settings - 4x MI300X 192GB on RunPod (AMD ROCm)
-USE_MULTI_GPU = True  # Enabled for 4x MI300X cluster
-WORLD_SIZE = 4  # 4x MI300X 192GB GPUs
-GPU_TYPE = "MI300X"  # AMD Instinct MI300X (ROCm)
+# Multi-GPU Settings - Auto-configured based on platform
+USE_MULTI_GPU = True  # Enable multi-GPU training
+WORLD_SIZE = int(os.environ.get('WORLD_SIZE', 4))  # Auto-detect from environment
+
+if CLOUD_PLATFORM == 'vertex_ai':
+    GPU_TYPE = "A100"  # NVIDIA A100 80GB (CUDA) on Vertex AI
+elif CLOUD_PLATFORM == 'runpod':
+    GPU_TYPE = "MI300X"  # AMD Instinct MI300X (ROCm) on RunPod
+else:
+    GPU_TYPE = "CUDA"  # Generic CUDA GPU
 
 # Device (will be set per process in DDP)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -244,11 +295,25 @@ def set_seed(seed=42):
         torch.backends.cudnn.benchmark = False
 
 def setup_ddp(rank, world_size):
-    """Initialize distributed training"""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    """Initialize distributed training
+    
+    Uses setdefault to allow Vertex AI and other platforms to override
+    MASTER_ADDR and MASTER_PORT via environment variables.
+    """
+    # Use setdefault so Vertex AI can override these for multi-node training
+    os.environ.setdefault('MASTER_ADDR', 'localhost')
+    os.environ.setdefault('MASTER_PORT', '12355')
+    
+    # Get rank and local_rank from environment if available (Vertex AI sets these)
+    if 'RANK' in os.environ:
+        rank = int(os.environ['RANK'])
+    if 'LOCAL_RANK' in os.environ:
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        local_rank = rank
+    
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
+    torch.cuda.set_device(local_rank)
 
 def cleanup_ddp():
     """Cleanup distributed training"""
@@ -2223,12 +2288,42 @@ def run_cross_validation(rank=0, world_size=1):
 # ============================================================================
 
 if __name__ == "__main__":
-    if USE_MULTI_GPU and WORLD_SIZE > 1:
+    # Detect if launched via torchrun (sets RANK, LOCAL_RANK, WORLD_SIZE)
+    # This is the preferred method for RunPod multi-GPU training
+    is_torchrun = 'RANK' in os.environ and 'LOCAL_RANK' in os.environ
+    
+    if is_torchrun:
+        # Launched via torchrun - use environment variables
+        rank = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        world_size = int(os.environ.get('WORLD_SIZE', 4))
+        
+        if rank == 0:
+            logger.info(f"\n{'='*80}")
+            logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING - TORCHRUN")
+            logger.info(f"Target: 90-95% Dice Score")
+            logger.info(f"Platform: {CLOUD_PLATFORM.upper()}")
+            logger.info(f"GPUs: {world_size}x {GPU_TYPE} 192GB")
+            logger.info(f"Total VRAM: {world_size * 192}GB | Effective Batch: {BATCH_SIZE * ACCUMULATION_STEPS * world_size}")
+            logger.info(f"TensorBoard: {TENSORBOARD_DIR}")
+            logger.info(f"Checkpoints: {MODEL_SAVE_DIR}")
+            logger.info(f"Resume Training: {RESUME_TRAINING}")
+            logger.info(f"{'='*80}\n")
+        
+        # Run cross-validation with detected rank/world_size
+        run_cross_validation(rank=rank, world_size=world_size)
+        
+        if rank == 0:
+            logger.info("\n✅ ALL TRAINING COMPLETE!\n")
+    
+    elif USE_MULTI_GPU and WORLD_SIZE > 1:
+        # Fallback: Launch via mp.spawn (for local testing)
         logger.info(f"\n{'='*80}")
-        logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING - MULTI-GPU")
+        logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING - MP.SPAWN")
         logger.info(f"Target: 90-95% Dice Score")
-        logger.info(f"GPUs: {WORLD_SIZE}x {GPU_TYPE} 192GB (AMD ROCm)")
-        logger.info(f"Total VRAM: {WORLD_SIZE * 192}GB | Effective Batch: {BATCH_SIZE * ACCUMULATION_STEPS * WORLD_SIZE}")
+        logger.info(f"Platform: {CLOUD_PLATFORM.upper()}")
+        logger.info(f"GPUs: {WORLD_SIZE}x {GPU_TYPE}")
+        logger.info(f"Effective Batch: {BATCH_SIZE * ACCUMULATION_STEPS * WORLD_SIZE}")
         logger.info(f"TensorBoard: {TENSORBOARD_DIR}")
         logger.info(f"{'='*80}\n")
         
@@ -2239,12 +2334,17 @@ if __name__ == "__main__":
             nprocs=WORLD_SIZE,
             join=True
         )
+        
+        logger.info("\n✅ ALL TRAINING COMPLETE!\n")
+    
     else:
+        # Single GPU training
         logger.info(f"\n{'='*80}")
-        logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING")
+        logger.info("OPTIMIZED BraTS 3D SEGMENTATION TRAINING - SINGLE GPU")
         logger.info("Target: 90-95% Dice Score")
+        logger.info(f"Platform: {CLOUD_PLATFORM.upper()}")
         logger.info(f"{'='*80}\n")
         
         run_cross_validation(rank=0, world_size=1)
-    
-    logger.info("\n✅ ALL TRAINING COMPLETE!\n")
+        
+        logger.info("\n✅ ALL TRAINING COMPLETE!\n")

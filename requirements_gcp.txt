@@ -1,0 +1,19 @@
+# =============================================================================
+# GCP Vertex AI - Additional Requirements
+# For use with Dockerfile.vertexai
+# =============================================================================
+
+# Google Cloud Platform SDKs
+google-cloud-aiplatform>=1.38.0
+google-cloud-storage>=2.10.0
+
+# For mounting GCS as filesystem (optional, for local testing)
+# gcsfuse is installed at OS level, not pip
+
+# TensorBoard for Vertex AI integration
+tensorboard>=2.14.0
+tb-gcp-uploader>=0.1.0
+
+# Additional utilities
+protobuf>=4.21.0
+grpcio>=1.48.0
