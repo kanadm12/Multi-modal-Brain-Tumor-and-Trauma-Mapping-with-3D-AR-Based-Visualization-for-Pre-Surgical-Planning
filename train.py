@@ -1676,31 +1676,39 @@ def apply_tta_transform(image, transform_idx):
         return torch.flip(torch.flip(image, dims=[4]), dims=[3])  # Flip X + Y
 
 def reverse_tta_transform(pred, transform_idx):
-    """Reverse TTA transform - Extended 12-point version"""
+    """Reverse TTA transform - Extended 12-point version
+    
+    Handles both 4D (B, D, H, W) and 5D (B, C, D, H, W) tensors.
+    For 5D tensors (probabilities), shift spatial dims by +1.
+    """
+    is_5d = pred.dim() == 5
+    # Spatial dimension offset: 5D has extra C dimension
+    offset = 1 if is_5d else 0
+    
     if transform_idx == 0:
         return pred
     elif transform_idx == 1:
-        return torch.flip(pred, dims=[3])  # Reverse flip X
+        return torch.flip(pred, dims=[3 + offset])  # Reverse flip X
     elif transform_idx == 2:
-        return torch.flip(pred, dims=[2])  # Reverse flip Y
+        return torch.flip(pred, dims=[2 + offset])  # Reverse flip Y
     elif transform_idx == 3:
-        return torch.flip(pred, dims=[1])  # Reverse flip Z
+        return torch.flip(pred, dims=[1 + offset])  # Reverse flip Z
     elif transform_idx == 4:
-        return torch.rot90(pred, 3, dims=[2, 3])  # Reverse 90° XY
+        return torch.rot90(pred, 3, dims=[2 + offset, 3 + offset])  # Reverse 90° XY
     elif transform_idx == 5:
-        return torch.rot90(pred, 2, dims=[2, 3])  # Reverse 180° XY
+        return torch.rot90(pred, 2, dims=[2 + offset, 3 + offset])  # Reverse 180° XY
     elif transform_idx == 6:
-        return torch.rot90(pred, 1, dims=[2, 3])  # Reverse 270° XY
+        return torch.rot90(pred, 1, dims=[2 + offset, 3 + offset])  # Reverse 270° XY
     elif transform_idx == 7:
-        return torch.rot90(pred, 3, dims=[1, 3])  # Reverse 90° XZ
+        return torch.rot90(pred, 3, dims=[1 + offset, 3 + offset])  # Reverse 90° XZ
     elif transform_idx == 8:
-        return torch.rot90(pred, 1, dims=[1, 3])  # Reverse 270° XZ
+        return torch.rot90(pred, 1, dims=[1 + offset, 3 + offset])  # Reverse 270° XZ
     elif transform_idx == 9:
-        return torch.rot90(pred, 3, dims=[1, 2])  # Reverse 90° YZ
+        return torch.rot90(pred, 3, dims=[1 + offset, 2 + offset])  # Reverse 90° YZ
     elif transform_idx == 10:
-        return torch.rot90(pred, 1, dims=[1, 2])  # Reverse 270° YZ
+        return torch.rot90(pred, 1, dims=[1 + offset, 2 + offset])  # Reverse 270° YZ
     else:  # 11: Reverse combined flip
-        return torch.flip(torch.flip(pred, dims=[2]), dims=[3])  # Reverse X + Y
+        return torch.flip(torch.flip(pred, dims=[2 + offset]), dims=[3 + offset])  # Reverse X + Y
 
 # ============================================================================
 # POST-PROCESSING - ENHANCED FOR BEST HD95
@@ -2281,20 +2289,24 @@ def validate_epoch(model, val_loader, device, use_tta=False, use_postprocessing=
             images, targets = images.to(device), targets.to(device)
             
             if use_tta:
-                pred_list = []
+                # TTA: Average PROBABILITIES across transforms, then take single argmax
+                prob_list = []
                 
                 for transform_idx in range(TTA_TRANSFORMS):
                     img_tta = apply_tta_transform(images, transform_idx)
                     
                     with autocast(enabled=USE_AMP):
                         outputs, _ = model(img_tta)
-                        pred_tta = torch.argmax(outputs, dim=1)
+                        probs = F.softmax(outputs, dim=1)  # Convert logits to probabilities
                     
-                    pred_tta = reverse_tta_transform(pred_tta, transform_idx)
-                    pred_list.append(pred_tta.float())
+                    # Reverse transform on probabilities (not class labels!)
+                    probs = reverse_tta_transform(probs, transform_idx)
+                    prob_list.append(probs)
                 
-                pred_ensemble = torch.stack(pred_list).mean(dim=0)
-                pred = torch.argmax(pred_ensemble, dim=0, keepdim=True)
+                # Average probabilities across all TTA transforms
+                prob_ensemble = torch.stack(prob_list).mean(dim=0)
+                # Single argmax on averaged probabilities
+                pred = torch.argmax(prob_ensemble, dim=1, keepdim=True)
             else:
                 with autocast(enabled=USE_AMP):
                     outputs, _ = model(images)
