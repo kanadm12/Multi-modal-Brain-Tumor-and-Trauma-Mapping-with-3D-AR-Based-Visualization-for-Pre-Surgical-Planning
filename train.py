@@ -162,13 +162,13 @@ USE_PREPROCESSED = os.environ.get('USE_PREPROCESSED', 'false').lower() == 'true'
 NUM_WORKERS = int(os.environ.get('NUM_WORKERS', '8'))  # 8 workers for NVIDIA GPUs
 
 # Input/Output Configuration
-CROP_SIZE = (224, 256, 224)  # Large input size for high VRAM GPUs
+CROP_SIZE = (160, 192, 160)  # Reduced for A100 80GB memory
 NUM_CLASSES = 4  # Background + NCR + ED + ET
 IN_CHANNELS = 4  # T1, T1c, T2, FLAIR
 N_FOLDS = 3  # 3-fold cross-validation
 
-# Model Architecture - OPTIMIZED FOR HIGH-END GPUs
-MODEL_FILTERS = [64, 128, 256, 512, 1024]  # Large capacity model
+# Model Architecture - OPTIMIZED FOR A100 80GB
+MODEL_FILTERS = [48, 96, 192, 384, 768]  # Reduced for memory efficiency
 USE_ATTENTION = True
 ATTENTION_TYPE = 'transformer'  # 'transformer' or 'lightweight'
 NUM_ATTENTION_HEADS = 8
@@ -191,9 +191,9 @@ if CLOUD_PLATFORM == 'vertex_ai':
     BATCH_SIZE = 4  # Per GPU (4 GPUs = 16 total batch size)
     ACCUMULATION_STEPS = 4  # Effective batch size = 64 (4 x 4 x 4)
 elif CLOUD_PLATFORM == 'runpod':
-    # 4x A100 80GB on RunPod
-    BATCH_SIZE = 4  # Per GPU (4 GPUs = 16 total batch size)
-    ACCUMULATION_STEPS = 4  # Effective batch size = 64 (4 x 4 x 4)
+    # 4x A100 80GB on RunPod - memory optimized
+    BATCH_SIZE = 2  # Per GPU (4 GPUs = 8 total batch size)
+    ACCUMULATION_STEPS = 8  # Effective batch size = 64 (2 x 8 x 4)
 else:
     # Local/other - conservative settings
     BATCH_SIZE = 2
