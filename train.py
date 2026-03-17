@@ -908,10 +908,39 @@ class DiceLoss(nn.Module):
         return loss / (pred.shape[1] - 1)
 
 class LovaszSoftmaxLoss(nn.Module):
-    """Lovasz-Softmax loss"""
+    """Lovasz-Softmax loss - CORRECTED implementation per original paper
+    
+    Reference: https://github.com/bermanmaxim/LovaszSoftmax
+    The Lovasz extension provides a tight convex surrogate for the Jaccard loss.
+    """
     def __init__(self, weights=None):
         super().__init__()
         self.weights = weights
+    
+    def _lovasz_grad(self, gt_sorted):
+        """Compute gradient of Lovasz extension w.r.t sorted errors
+        
+        This is the key formula from the original paper.
+        """
+        gts = gt_sorted.sum()
+        
+        # Handle empty case
+        if gts == 0:
+            return gt_sorted  # Returns zeros
+        
+        # Correct formula per original paper:
+        # intersection = total_positives - cumulative_positives_so_far
+        # union = total_positives + cumulative_negatives_so_far
+        intersection = gts - gt_sorted.float().cumsum(0)
+        union = gts + (1 - gt_sorted).float().cumsum(0)
+        
+        jaccard = 1.0 - intersection / union.clamp(min=1e-6)
+        
+        # Compute per-pixel gradient (difference from previous)
+        if len(gt_sorted) > 1:
+            jaccard[1:] = jaccard[1:] - jaccard[:-1]
+        
+        return jaccard
     
     def forward(self, pred, target):
         losses = []
@@ -921,22 +950,27 @@ class LovaszSoftmaxLoss(nn.Module):
             pred_c = pred_prob[:, c]
             target_c = (target == c).float()
             
+            # Skip if no target voxels for this class
+            if target_c.sum() == 0:
+                continue
+            
+            # Compute error for each voxel: |pred - target|
             errors = (1 - pred_c) * target_c + pred_c * (1 - target_c)
             errors_sorted, perm = torch.sort(errors.view(-1), descending=True)
             
+            # Sort targets by error (descending)
             target_sorted = target_c.view(-1)[perm]
-            intersection = torch.cumsum(target_sorted, dim=0)
-            union = torch.cumsum((1 - target_sorted), dim=0) + intersection
             
-            jaccard = 1.0 - intersection / union.clamp(min=1e-6)
-            jaccard[1:] = jaccard[1:] - jaccard[:-1]
+            # Compute Lovasz gradient (corrected formula)
+            jaccard_grad = self._lovasz_grad(target_sorted)
             
-            loss = torch.sum(errors_sorted * jaccard)
+            # Weighted sum of errors by Lovasz gradient
+            loss = torch.dot(errors_sorted, jaccard_grad)
             
             weight = self.weights[c].item() if self.weights is not None else 1.0
             losses.append(weight * loss)
         
-        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device)
+        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device, requires_grad=True)
 
 class BoundaryLoss(nn.Module):
     """GPU-Accelerated Boundary Loss - MUCH faster than SurfaceLoss
@@ -954,6 +988,9 @@ class BoundaryLoss(nn.Module):
         self.register_buffer('sobel_x', self._create_sobel_kernel(0))
         self.register_buffer('sobel_y', self._create_sobel_kernel(1))
         self.register_buffer('sobel_z', self._create_sobel_kernel(2))
+        
+        # Cache dilation kernel (was being created each forward pass)
+        self.register_buffer('dilation_kernel', torch.ones(1, 1, 3, 3, 3))
     
     def _create_sobel_kernel(self, axis):
         """Create 3D Sobel kernel for given axis"""
@@ -987,9 +1024,8 @@ class BoundaryLoss(nn.Module):
         # Threshold to get boundary
         boundary = (edge_magnitude > 0.1).float().squeeze(1)
         
-        # Dilate boundary to get region of interest
-        kernel = torch.ones(1, 1, 3, 3, 3, device=mask.device)
-        boundary_dilated = F.conv3d(boundary.unsqueeze(1), kernel, padding=1)
+        # Dilate boundary to get region of interest (using cached kernel)
+        boundary_dilated = F.conv3d(boundary.unsqueeze(1), self.dilation_kernel.to(mask.device), padding=1)
         boundary_region = (boundary_dilated > 0).float().squeeze(1)
         
         return boundary_region
@@ -1027,7 +1063,7 @@ class BoundaryLoss(nn.Module):
             boundary_dice = (2 * intersection + 1e-6) / (union + 1e-6)
             losses.append(1 - boundary_dice)
         
-        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device)
+        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device, requires_grad=True)
 
 
 class TverskyLoss(nn.Module):
@@ -1063,7 +1099,7 @@ class TverskyLoss(nn.Module):
             weight = self.class_weights[c].item() if self.class_weights is not None else 1.0
             losses.append(weight * (1 - tversky))
         
-        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device)
+        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device, requires_grad=True)
 
 
 class FocalTverskyLoss(nn.Module):
@@ -1101,7 +1137,7 @@ class FocalTverskyLoss(nn.Module):
             weight = self.class_weights[c].item() if self.class_weights is not None else 1.0
             losses.append(weight * focal_tversky)
         
-        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device)
+        return sum(losses) / len(losses) if losses else torch.tensor(0.0, device=pred.device, requires_grad=True)
 
 class CombinedLoss(nn.Module):
     """Ultimate Combined Loss for BraTS Segmentation
@@ -1133,8 +1169,13 @@ class CombinedLoss(nn.Module):
         self.lovasz_loss = LovaszSoftmaxLoss(weights=class_weights)
         self.ce_loss = nn.CrossEntropyLoss(
             weight=class_weights, 
-            label_smoothing=label_smoothing  # Better calibration
+            label_smoothing=label_smoothing,  # Better calibration
+            reduction='none'  # For OHEM support
         )
+        
+        # OHEM settings
+        self.use_ohem = USE_OHEM
+        self.ohem_ratio = OHEM_RATIO
         
         # Dynamic loss weighting (starts equal, adapts based on convergence)
         self.epoch = 0
@@ -1148,7 +1189,22 @@ class CombinedLoss(nn.Module):
         boundary = self.boundary_loss(pred, target)
         tversky = self.focal_tversky_loss(pred, target)
         lovasz = self.lovasz_loss(pred, target)
-        ce = self.ce_loss(pred, target)
+        
+        # CrossEntropy with OHEM (Online Hard Example Mining)
+        ce_per_voxel = self.ce_loss(pred, target)  # Shape: (B, D, H, W)
+        
+        if self.use_ohem and self.training:
+            # Keep only the hardest K% of voxels
+            # This focuses training on difficult regions
+            k = int(ce_per_voxel.numel() * self.ohem_ratio)
+            if k > 0:
+                # Get top-k hardest losses
+                ce_sorted, _ = torch.sort(ce_per_voxel.view(-1), descending=True)
+                ce = ce_sorted[:k].mean()
+            else:
+                ce = ce_per_voxel.mean()
+        else:
+            ce = ce_per_voxel.mean()
         
         # Dynamic weighting: increase boundary weight as training progresses
         # Early: focus on overall segmentation
