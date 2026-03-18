@@ -1246,15 +1246,69 @@ class FocalCrossEntropyLoss(nn.Module):
         return focal_loss  # 'none' - for OHEM
 
 
+class NCRAnatomicalConstraintLoss(nn.Module):
+    """NCR Anatomical Constraint Loss - Forces NCR to be INSIDE tumor only
+    
+    Problem: Model confuses dark background voxels with dark NCR (necrotic core).
+    Both appear similar on T1c, but NCR is ALWAYS inside the tumor.
+    
+    This loss adds heavy penalty when:
+    - Model predicts NCR (class 1) at a voxel
+    - But ground truth shows that voxel is Background (class 0)
+    
+    This forces the model to learn: "NCR can only exist inside the tumor region"
+    """
+    def __init__(self, penalty_weight=2.0):
+        super().__init__()
+        self.penalty_weight = penalty_weight
+    
+    def forward(self, pred, target):
+        """
+        pred: (B, C, D, H, W) logits
+        target: (B, D, H, W) class labels
+        """
+        pred_prob = F.softmax(pred, dim=1)
+        
+        # Get NCR prediction probability (class 1)
+        ncr_prob = pred_prob[:, 1]  # (B, D, H, W)
+        
+        # Ground truth: where is background?
+        is_background = (target == 0).float()  # (B, D, H, W)
+        
+        # Ground truth: where is actual tumor (any class > 0)?
+        is_tumor = (target > 0).float()
+        
+        # Penalty: NCR probability in background regions
+        # If model predicts high NCR prob where GT is background → bad!
+        false_ncr_in_bg = ncr_prob * is_background
+        
+        # Mean penalty (only consider voxels where there is signal)
+        # Normalize by number of background voxels to avoid scale issues
+        bg_count = is_background.sum() + 1e-6
+        penalty = false_ncr_in_bg.sum() / bg_count
+        
+        # Bonus: Encourage NCR prediction INSIDE tumor regions
+        # If there's actual tumor but model predicts NCR there, that's OK
+        # This creates a slight positive gradient toward NCR in tumor regions
+        tumor_count = is_tumor.sum() + 1e-6
+        ncr_in_tumor_bonus = (ncr_prob * is_tumor).sum() / tumor_count
+        
+        # Total loss: penalize false NCR, reward NCR-in-tumor
+        loss = self.penalty_weight * penalty - 0.1 * ncr_in_tumor_bonus
+        
+        return loss.clamp(min=0)  # Don't go negative
+
+
 class CombinedLoss(nn.Module):
     """Ultimate Combined Loss for BraTS Segmentation
     
-    Optimized combination of 5 loss functions:
+    Optimized combination of 6 loss functions:
     - Dice: Primary spatial overlap metric (0.45)
     - Boundary: GPU-accelerated edge focus for HD95 (0.20)
     - Tversky/FocalTversky: Class imbalance handling (0.15)
     - Lovasz: IoU optimization (0.10)
     - FocalCE: Prevents over-prediction of minority classes (0.10)
+    - NCR Anatomical: Forces NCR inside tumor only (0.05)
     
     Expected improvement over baseline: +5-8% Dice, -30-50% HD95
     """
@@ -1267,6 +1321,7 @@ class CombinedLoss(nn.Module):
         self.tversky_weight = tversky_weight
         self.lovasz_weight = lovasz_weight
         self.ce_weight = ce_weight
+        self.ncr_constraint_weight = 0.05  # NEW: anatomical constraint
         
         self.dice_loss = DiceLoss(weights=class_weights)
         self.boundary_loss = BoundaryLoss()  # GPU-accelerated boundary loss
@@ -1281,6 +1336,8 @@ class CombinedLoss(nn.Module):
             label_smoothing=label_smoothing,
             reduction='none'  # For OHEM support
         )
+        # NEW: NCR anatomical constraint
+        self.ncr_constraint = NCRAnatomicalConstraintLoss(penalty_weight=2.0)
         
         # OHEM settings
         self.use_ohem = USE_OHEM
@@ -1325,11 +1382,15 @@ class CombinedLoss(nn.Module):
         else:
             boundary_factor = 1.5  # Increased boundary focus late for HD95
         
+        # NCR Anatomical Constraint - prevents NCR in background regions
+        ncr_constraint = self.ncr_constraint(pred, target)
+        
         total_loss = (self.dice_weight * dice + 
                       self.boundary_weight * boundary_factor * boundary +
                       self.tversky_weight * tversky +
                       self.lovasz_weight * lovasz + 
-                      self.ce_weight * ce)
+                      self.ce_weight * ce +
+                      self.ncr_constraint_weight * ncr_constraint)
         
         if return_components:
             return total_loss, {
@@ -1338,6 +1399,7 @@ class CombinedLoss(nn.Module):
                 'tversky': tversky.item() if torch.is_tensor(tversky) else tversky,
                 'lovasz': lovasz.item() if torch.is_tensor(lovasz) else lovasz,
                 'ce': ce.item() if torch.is_tensor(ce) else ce,
+                'ncr_constraint': ncr_constraint.item() if torch.is_tensor(ncr_constraint) else ncr_constraint,
                 'boundary_factor': boundary_factor
             }
         return total_loss
