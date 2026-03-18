@@ -2807,7 +2807,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         logger.info("✅ AMP scaler state loaded")
     
     start_epoch = checkpoint.get('epoch', 0) + 1
-    best_val_dice = checkpoint.get('best_val_dice', checkpoint.get('val_dice', 0.0))
+    best_val_dice = checkpoint.get('best_val_dice') or checkpoint.get('val_dice') or 0.0
     
     logger.info(f"✅ Resuming from epoch {start_epoch}, best Dice: {best_val_dice:.4f}")
     
