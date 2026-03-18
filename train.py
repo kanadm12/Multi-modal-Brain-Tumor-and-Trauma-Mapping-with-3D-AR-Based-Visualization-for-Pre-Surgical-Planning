@@ -226,6 +226,7 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 # Resume Training - Enable for RunPod (auto-resumes on pod restart)
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
+RESUME_FROM_BEST = True  # NEW: Prefer best model over epoch checkpoints
 
 # Class weights for loss - NCR BOOSTED to fix seesaw effect
 # E59: NCR collapsing (0.039→0.002) as ET recovers (0.028→0.358)
@@ -3084,8 +3085,23 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
     
     return start_epoch, best_val_dice
 
-def find_latest_checkpoint(fold_idx):
-    """Find the latest checkpoint for a given fold"""
+def find_latest_checkpoint(fold_idx, prefer_best=True):
+    """Find the latest checkpoint for a given fold
+    
+    Args:
+        fold_idx: Fold index
+        prefer_best: If True, prefer fold_X_best.pth over epoch checkpoints
+    
+    Returns:
+        Path to checkpoint file, or None if not found
+    """
+    # First check for best model if preferred
+    if prefer_best:
+        best_model_path = os.path.join(MODEL_SAVE_DIR, f'fold_{fold_idx}_best.pth')
+        if os.path.exists(best_model_path):
+            return best_model_path
+    
+    # Fall back to epoch checkpoints
     checkpoint_pattern = os.path.join(MODEL_SAVE_DIR, f'fold_{fold_idx}_epoch_*.pth')
     checkpoints = glob.glob(checkpoint_pattern)
     
@@ -3354,7 +3370,7 @@ def run_cross_validation(rank=0, world_size=1):
         if RESUME_TRAINING and rank == 0:
             # Auto-detect checkpoint if path not specified
             if RESUME_CHECKPOINT_PATH is None:
-                checkpoint_path = find_latest_checkpoint(fold_idx)
+                checkpoint_path = find_latest_checkpoint(fold_idx, prefer_best=RESUME_FROM_BEST)
                 if checkpoint_path is None:
                     logger.warning(f"No checkpoint found for fold {fold_idx}. Starting from scratch.")
                 else:
