@@ -1246,6 +1246,62 @@ class FocalCrossEntropyLoss(nn.Module):
         return focal_loss  # 'none' - for OHEM
 
 
+class BraTSRegionLoss(nn.Module):
+    """BraTS Region-Based Loss - DIRECTLY optimize what the challenge measures!
+    
+    BraTS Challenge evaluates WT/TC/ET regions, NOT individual classes.
+    This loss directly optimizes those regions:
+    
+    - WT (Whole Tumor): NCR + ED + ET → classes 1, 2, 3
+    - TC (Tumor Core): NCR + ET → classes 1, 3  
+    - ET (Enhancing): ET only → class 3
+    
+    This is CRITICAL because good class dice ≠ good region dice.
+    Over-prediction of NCR can hurt WT even if NCR dice is "good".
+    """
+    def __init__(self, wt_weight=1.0, tc_weight=1.0, et_weight=1.5, smooth=1e-6):
+        super().__init__()
+        self.wt_weight = wt_weight
+        self.tc_weight = tc_weight
+        self.et_weight = et_weight  # ET is most important for grading
+        self.smooth = smooth
+    
+    def forward(self, pred, target):
+        """
+        pred: (B, C, D, H, W) logits
+        target: (B, D, H, W) class labels
+        """
+        pred_prob = F.softmax(pred, dim=1)
+        
+        # Convert to region probabilities
+        # WT = P(NCR) + P(ED) + P(ET) = 1 - P(BG)
+        pred_wt = 1 - pred_prob[:, 0]  # Everything except background
+        pred_tc = pred_prob[:, 1] + pred_prob[:, 3]  # NCR + ET
+        pred_et = pred_prob[:, 3]  # ET only
+        
+        # Ground truth regions
+        target_wt = (target > 0).float()  # All tumor
+        target_tc = ((target == 1) | (target == 3)).float()  # NCR + ET
+        target_et = (target == 3).float()  # ET only
+        
+        # Dice loss for each region
+        def dice_loss(pred_r, target_r):
+            pred_flat = pred_r.view(-1)
+            target_flat = target_r.view(-1)
+            intersection = (pred_flat * target_flat).sum()
+            return 1 - (2 * intersection + self.smooth) / (pred_flat.sum() + target_flat.sum() + self.smooth)
+        
+        wt_loss = dice_loss(pred_wt, target_wt)
+        tc_loss = dice_loss(pred_tc, target_tc)
+        et_loss = dice_loss(pred_et, target_et)
+        
+        total = (self.wt_weight * wt_loss + 
+                 self.tc_weight * tc_loss + 
+                 self.et_weight * et_loss) / (self.wt_weight + self.tc_weight + self.et_weight)
+        
+        return total
+
+
 class NCRAnatomicalConstraintLoss(nn.Module):
     """NCR Anatomical Constraint Loss - Forces NCR to be INSIDE tumor only
     
@@ -1302,18 +1358,19 @@ class NCRAnatomicalConstraintLoss(nn.Module):
 class CombinedLoss(nn.Module):
     """Ultimate Combined Loss for BraTS Segmentation
     
-    Optimized combination of 6 loss functions:
-    - Dice: Primary spatial overlap metric (0.45)
-    - Boundary: GPU-accelerated edge focus for HD95 (0.20)
-    - Tversky/FocalTversky: Class imbalance handling (0.15)
+    Optimized combination of 7 loss functions:
+    - Dice: Primary spatial overlap metric (0.30)
+    - BraTS Region: DIRECTLY optimizes WT/TC/ET (0.20) ← NEW & CRITICAL
+    - Boundary: GPU-accelerated edge focus for HD95 (0.15)
+    - Tversky/FocalTversky: Class imbalance handling (0.10)
     - Lovasz: IoU optimization (0.10)
     - FocalCE: Prevents over-prediction of minority classes (0.10)
     - NCR Anatomical: Forces NCR inside tumor only (0.05)
     
     Expected improvement over baseline: +5-8% Dice, -30-50% HD95
     """
-    def __init__(self, dice_weight=0.45, boundary_weight=0.20, 
-                 tversky_weight=0.15, lovasz_weight=0.10, ce_weight=0.10, 
+    def __init__(self, dice_weight=0.30, boundary_weight=0.15, 
+                 tversky_weight=0.10, lovasz_weight=0.10, ce_weight=0.10, 
                  class_weights=None, label_smoothing=0.1):
         super().__init__()
         self.dice_weight = dice_weight
@@ -1321,9 +1378,11 @@ class CombinedLoss(nn.Module):
         self.tversky_weight = tversky_weight
         self.lovasz_weight = lovasz_weight
         self.ce_weight = ce_weight
-        self.ncr_constraint_weight = 0.05  # NEW: anatomical constraint
+        self.brats_region_weight = 0.20  # NEW: Direct region optimization
+        self.ncr_constraint_weight = 0.05  # Anatomical constraint
         
         self.dice_loss = DiceLoss(weights=class_weights)
+        self.brats_region_loss = BraTSRegionLoss(wt_weight=1.0, tc_weight=1.0, et_weight=1.5)
         self.boundary_loss = BoundaryLoss()  # GPU-accelerated boundary loss
         self.focal_tversky_loss = FocalTverskyLoss(
             alpha=0.7, beta=0.3, gamma=0.75, class_weights=class_weights
@@ -1356,6 +1415,9 @@ class CombinedLoss(nn.Module):
         tversky = self.focal_tversky_loss(pred, target)
         lovasz = self.lovasz_loss(pred, target)
         
+        # NEW: BraTS Region Loss - directly optimizes challenge metrics (WT/TC/ET)
+        brats_region = self.brats_region_loss(pred, target)
+        
         # CrossEntropy with OHEM (Online Hard Example Mining)
         ce_per_voxel = self.ce_loss(pred, target)  # Shape: (B, D, H, W)
         
@@ -1386,6 +1448,7 @@ class CombinedLoss(nn.Module):
         ncr_constraint = self.ncr_constraint(pred, target)
         
         total_loss = (self.dice_weight * dice + 
+                      self.brats_region_weight * brats_region +  # NEW: Direct WT/TC/ET
                       self.boundary_weight * boundary_factor * boundary +
                       self.tversky_weight * tversky +
                       self.lovasz_weight * lovasz + 
@@ -1395,6 +1458,7 @@ class CombinedLoss(nn.Module):
         if return_components:
             return total_loss, {
                 'dice': dice.item() if torch.is_tensor(dice) else dice,
+                'brats_region': brats_region.item() if torch.is_tensor(brats_region) else brats_region,
                 'boundary': boundary.item() if torch.is_tensor(boundary) else boundary,
                 'tversky': tversky.item() if torch.is_tensor(tversky) else tversky,
                 'lovasz': lovasz.item() if torch.is_tensor(lovasz) else lovasz,
