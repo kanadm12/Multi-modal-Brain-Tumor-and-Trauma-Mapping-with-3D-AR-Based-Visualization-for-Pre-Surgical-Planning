@@ -227,11 +227,11 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
-# Class weights for loss - BALANCED with FocalCE protection
-# At epoch 35: ED=0.80, ET=0.57, but NCR=0.001 (model ignoring NCR)
-# NCR weight 0.5 was too low - model learned to ignore NCR entirely
-# FocalCE now prevents over-prediction, so we can use higher NCR weight
-CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.5])  # NCR=1.5x with FocalCE protection
+# Class weights for loss - ET BOOSTED
+# E64: NCR=0.55, ED=0.83, but ET=0.009 (collapsed!)
+# NCR now learning well with anatomical constraint
+# ET needs higher weight - it's the smallest and most important class clinically
+CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 3.0])  # ET=3.0x to recover from collapse
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
