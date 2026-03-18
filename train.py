@@ -228,10 +228,10 @@ RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 RESUME_FROM_BEST = True  # NEW: Prefer best model over epoch checkpoints
 
-# Class weights for loss - NCR BOOSTED to fix seesaw effect
-# E59: NCR collapsing (0.039→0.002) as ET recovers (0.028→0.358)
-# Solution: Boost NCR weight, add NCR false negative penalty
-CLASS_WEIGHTS = torch.tensor([0.0, 2.5, 1.0, 1.5])  # NCR=2.5 (boosted), ET=1.5, ED=1.0
+# Class weights for loss - BALANCED (reverted from aggressive NCR boost)
+# E64 showed NCR=2.5 hurt everything without helping NCR (BraTS: 0.147→0.083)
+# Keep NCR slightly elevated but not aggressive
+CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.5])  # Balanced: NCR=ET=1.5, ED=1.0
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
@@ -1489,19 +1489,19 @@ class CombinedLoss(nn.Module):
     """Ultimate Combined Loss for BraTS Segmentation
     
     Optimized combination of 9 loss functions:
-    - Dice: Primary spatial overlap metric (0.20)
+    - Dice: Primary spatial overlap metric (0.25)
     - BraTS Region: DIRECTLY optimizes WT/TC/ET (0.20)
     - Boundary: GPU-accelerated edge focus for HD95 (0.15)
     - Tversky/FocalTversky: Class imbalance handling (0.10)
     - Lovasz: IoU optimization (0.10)
     - FocalCE: Prevents over-prediction of minority classes (0.05)
     - NCR Anatomical: Forces NCR inside tumor only (0.03)
-    - ET False Positive: Prevents ET over-prediction (0.07)
-    - NCR False Negative: Prevents NCR collapse (seesaw fix) (0.10) ← NEW
+    - ET False Positive: Prevents ET over-prediction (0.10)
+    - NCR False Negative: Light seesaw correction (0.02) ← REDUCED
     
     Expected improvement over baseline: +5-8% Dice, -30-50% HD95
     """
-    def __init__(self, dice_weight=0.20, boundary_weight=0.15, 
+    def __init__(self, dice_weight=0.25, boundary_weight=0.15, 
                  tversky_weight=0.10, lovasz_weight=0.10, ce_weight=0.05, 
                  class_weights=None, label_smoothing=0.1):
         super().__init__()
@@ -1511,9 +1511,9 @@ class CombinedLoss(nn.Module):
         self.lovasz_weight = lovasz_weight
         self.ce_weight = ce_weight
         self.brats_region_weight = 0.20  # Direct region optimization
-        self.ncr_constraint_weight = 0.03  # NCR anatomical constraint (reduced)
-        self.et_fp_weight = 0.07  # ET false positive penalty (reduced)
-        self.ncr_fn_weight = 0.10  # NEW: NCR false negative penalty (seesaw fix)
+        self.ncr_constraint_weight = 0.03  # NCR anatomical constraint
+        self.et_fp_weight = 0.10  # ET false positive penalty
+        self.ncr_fn_weight = 0.02  # REDUCED: Light NCR seesaw correction (was 0.10)
         
         self.dice_loss = DiceLoss(weights=class_weights)
         self.brats_region_loss = BraTSRegionLoss(wt_weight=1.0, tc_weight=1.0, et_weight=1.0)
