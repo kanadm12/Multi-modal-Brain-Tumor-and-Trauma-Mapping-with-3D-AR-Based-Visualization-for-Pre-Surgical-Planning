@@ -227,12 +227,11 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
-# Class weights for loss - SUPPRESS NCR OVER-PREDICTION
-# At epoch 42: ED=0.73, ET=0.47, but NCR=0.001 and WT=0.046
-# NCR over-prediction still happening - model predicts NCR everywhere
-# Solution: Set NCR weight BELOW baseline to discourage false positives
-# Once WT improves to ~0.5+, we can increase NCR weight back to 1.0
-CLASS_WEIGHTS = torch.tensor([0.0, 0.5, 1.0, 1.5])  # NCR=0.5x to stop over-prediction
+# Class weights for loss - BALANCED with FocalCE protection
+# At epoch 35: ED=0.80, ET=0.57, but NCR=0.001 (model ignoring NCR)
+# NCR weight 0.5 was too low - model learned to ignore NCR entirely
+# FocalCE now prevents over-prediction, so we can use higher NCR weight
+CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.5])  # NCR=1.5x with FocalCE protection
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
