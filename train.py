@@ -226,10 +226,12 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
-# Class weights for loss - BALANCED (3.0 NCR caused over-prediction!)
-# High NCR weight made model predict NCR everywhere, destroying WT dice
-# Solution: balanced weights + FocalCE to learn hard examples without over-prediction
-CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.5])  # Balanced: NCR and ET at 1.5x
+# Class weights for loss - SUPPRESS NCR OVER-PREDICTION
+# At epoch 42: ED=0.73, ET=0.47, but NCR=0.001 and WT=0.046
+# NCR over-prediction still happening - model predicts NCR everywhere
+# Solution: Set NCR weight BELOW baseline to discourage false positives
+# Once WT improves to ~0.5+, we can increase NCR weight back to 1.0
+CLASS_WEIGHTS = torch.tensor([0.0, 0.5, 1.0, 1.5])  # NCR=0.5x to stop over-prediction
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
