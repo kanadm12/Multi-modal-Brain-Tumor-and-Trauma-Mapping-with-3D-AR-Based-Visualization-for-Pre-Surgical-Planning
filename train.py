@@ -35,6 +35,7 @@ import random
 import gc
 import numpy as np
 import SimpleITK as sitk
+import nibabel as nib
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -264,6 +265,11 @@ OHEM_RATIO = 0.7  # Keep 70% hardest pixels in loss
 
 # Label Smoothing for better calibration
 LABEL_SMOOTHING = 0.1
+
+# NCR Weighted Sampling - Oversample patients with more NCR voxels
+# This helps the model learn NCR which is often underrepresented
+USE_NCR_WEIGHTED_SAMPLING = True
+NCR_WEIGHT_POWER = 0.5  # weight = 1 + (ncr_ratio ^ power), higher = more aggressive
 
 # Multi-GPU Settings - Auto-configured based on platform
 USE_MULTI_GPU = True  # Enable multi-GPU training
@@ -1647,6 +1653,167 @@ class OptimizedUNet3D(nn.Module):
         return out, aux_outputs
 
 # ============================================================================
+# NCR WEIGHTED SAMPLING
+# ============================================================================
+
+def compute_ncr_volumes(data_dir: str, patient_ids: List[str], rank: int = 0) -> Dict[str, float]:
+    """Pre-compute NCR volumes for weighted sampling
+    
+    Scans all patients once to count NCR voxels. Results are cached.
+    Patients with more NCR get higher sampling weight.
+    
+    Args:
+        data_dir: Path to dataset directory
+        patient_ids: List of patient IDs to process
+        rank: GPU rank (only rank 0 logs progress)
+    
+    Returns:
+        Dict mapping patient_id -> ncr_ratio (NCR voxels / total tumor voxels)
+    """
+    ncr_volumes = {}
+    
+    if rank == 0:
+        logger.info("Computing NCR volumes for weighted sampling...")
+    
+    for i, patient_id in enumerate(patient_ids):
+        patient_dir = os.path.join(data_dir, patient_id)
+        
+        # Find segmentation file
+        seg_file = glob.glob(os.path.join(patient_dir, "*seg.nii.gz"))
+        if not seg_file:
+            seg_file = glob.glob(os.path.join(patient_dir, "*seg.nii"))
+        
+        if seg_file and os.path.getsize(seg_file[0]) > 1024:
+            try:
+                seg = nib.load(seg_file[0]).get_fdata().astype(np.uint8)
+                
+                # Count voxels (original labels: 1=NCR, 2=ED, 4=ET)
+                ncr_count = np.sum(seg == 1)
+                ed_count = np.sum(seg == 2)
+                et_count = np.sum(seg == 4)
+                total_tumor = ncr_count + ed_count + et_count
+                
+                if total_tumor > 0:
+                    ncr_ratio = ncr_count / total_tumor
+                else:
+                    ncr_ratio = 0.0
+                
+                ncr_volumes[patient_id] = ncr_ratio
+            except Exception as e:
+                ncr_volumes[patient_id] = 0.0
+        else:
+            ncr_volumes[patient_id] = 0.0
+        
+        if rank == 0 and (i + 1) % 100 == 0:
+            logger.info(f"  Processed {i + 1}/{len(patient_ids)} patients")
+    
+    if rank == 0:
+        ncr_positive = sum(1 for v in ncr_volumes.values() if v > 0)
+        avg_ncr_ratio = np.mean([v for v in ncr_volumes.values() if v > 0]) if ncr_positive > 0 else 0
+        logger.info(f"  NCR-positive patients: {ncr_positive}/{len(patient_ids)} ({100*ncr_positive/len(patient_ids):.1f}%)")
+        logger.info(f"  Average NCR ratio (when present): {avg_ncr_ratio:.3f}")
+    
+    return ncr_volumes
+
+
+class DistributedWeightedSampler(torch.utils.data.Sampler):
+    """Distributed sampler with weighted sampling for class imbalance
+    
+    Combines DistributedSampler (sharding across GPUs) with 
+    WeightedRandomSampler (oversampling rare classes).
+    
+    Each GPU gets a different shard of indices, but within that shard,
+    samples are drawn with probability proportional to their weights.
+    """
+    def __init__(self, weights: List[float], num_samples: int, 
+                 num_replicas: int = None, rank: int = None, 
+                 replacement: bool = True, seed: int = 42):
+        """
+        Args:
+            weights: Weight for each sample (higher = sampled more often)
+            num_samples: Total number of samples to draw per epoch
+            num_replicas: Number of distributed processes (GPUs)
+            rank: Rank of current process
+            replacement: Sample with replacement (required for weighted)
+            seed: Random seed for reproducibility
+        """
+        if num_replicas is None:
+            if dist.is_available() and dist.is_initialized():
+                num_replicas = dist.get_world_size()
+            else:
+                num_replicas = 1
+        
+        if rank is None:
+            if dist.is_available() and dist.is_initialized():
+                rank = dist.get_rank()
+            else:
+                rank = 0
+        
+        self.weights = torch.tensor(weights, dtype=torch.float64)
+        self.num_samples = num_samples
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.replacement = replacement
+        self.seed = seed
+        self.epoch = 0
+        
+        # Number of samples per GPU
+        self.num_samples_per_replica = int(np.ceil(num_samples / num_replicas))
+        self.total_size = self.num_samples_per_replica * num_replicas
+    
+    def __iter__(self):
+        # Deterministic shuffling based on epoch
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        
+        # Draw weighted samples
+        indices = torch.multinomial(
+            self.weights, 
+            self.total_size, 
+            replacement=self.replacement,
+            generator=g
+        ).tolist()
+        
+        # Shard indices for this GPU
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+        
+        return iter(indices)
+    
+    def __len__(self):
+        return self.num_samples_per_replica
+    
+    def set_epoch(self, epoch: int):
+        """Set epoch for deterministic shuffling across processes"""
+        self.epoch = epoch
+
+
+def compute_sample_weights(patient_ids: List[str], ncr_volumes: Dict[str, float], 
+                           power: float = NCR_WEIGHT_POWER) -> List[float]:
+    """Compute sampling weights based on NCR volumes
+    
+    Args:
+        patient_ids: List of patient IDs in dataset order
+        ncr_volumes: Dict mapping patient_id -> ncr_ratio
+        power: Exponent for NCR ratio (0.5 = sqrt, smoother weighting)
+    
+    Returns:
+        List of weights in same order as patient_ids
+    """
+    weights = []
+    for pid in patient_ids:
+        ncr_ratio = ncr_volumes.get(pid, 0.0)
+        # Weight formula: 1 + ncr_ratio^power
+        # - No NCR (ratio=0): weight=1 (baseline)
+        # - 10% NCR (ratio=0.1): weight=1.32 (power=0.5)
+        # - 30% NCR (ratio=0.3): weight=1.55 (power=0.5)
+        # - 50% NCR (ratio=0.5): weight=1.71 (power=0.5)
+        weight = 1.0 + (ncr_ratio ** power)
+        weights.append(weight)
+    
+    return weights
+
+
+# ============================================================================
 # DATASET
 # ============================================================================
 
@@ -2760,6 +2927,11 @@ def run_cross_validation(rank=0, world_size=1):
         
         logger.info(f"Train: {len(train_ids)}, Val: {len(val_ids)}, Test: {len(test_ids)}")
         
+        # Compute NCR volumes for weighted sampling (helps model learn rare NCR class)
+        ncr_volumes = None
+        if USE_NCR_WEIGHTED_SAMPLING:
+            ncr_volumes = compute_ncr_volumes(DATA_DIR, list(train_ids), rank=rank)
+        
         # Datasets
         train_dataset = BraTSDataset3D(DATA_DIR, train_ids, split='train', use_preprocessed=USE_PREPROCESSED)
         val_dataset = BraTSDataset3D(DATA_DIR, val_ids, split='val', use_preprocessed=USE_PREPROCESSED)
@@ -2770,7 +2942,21 @@ def run_cross_validation(rank=0, world_size=1):
         workers = NUM_WORKERS
         
         if USE_MULTI_GPU and world_size > 1:
-            train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+            # Use weighted sampling if enabled (helps NCR learning)
+            if USE_NCR_WEIGHTED_SAMPLING and ncr_volumes is not None:
+                sample_weights = compute_sample_weights(list(train_ids), ncr_volumes)
+                train_sampler = DistributedWeightedSampler(
+                    weights=sample_weights,
+                    num_samples=len(train_dataset),
+                    num_replicas=world_size,
+                    rank=rank,
+                    replacement=True,
+                    seed=42
+                )
+                if rank == 0:
+                    logger.info(f"Using NCR-weighted sampling (power={NCR_WEIGHT_POWER})")
+            else:
+                train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
             train_loader = DataLoader(
                 train_dataset, 
                 batch_size=BATCH_SIZE, 
@@ -2783,17 +2969,38 @@ def run_cross_validation(rank=0, world_size=1):
                 timeout=60 if workers > 0 else 0  # 60s timeout to fail fast
             )
         else:
-            train_loader = DataLoader(
-                train_dataset, 
-                batch_size=BATCH_SIZE, 
-                shuffle=True,
-                num_workers=workers, 
-                pin_memory=True, 
-                collate_fn=collate_fn_skip_none,
-                prefetch_factor=2 if workers > 0 else None,
-                persistent_workers=workers > 0,
-                timeout=60 if workers > 0 else 0
-            )
+            # Single GPU case - use WeightedRandomSampler if enabled
+            if USE_NCR_WEIGHTED_SAMPLING and ncr_volumes is not None:
+                sample_weights = compute_sample_weights(list(train_ids), ncr_volumes)
+                train_sampler = torch.utils.data.WeightedRandomSampler(
+                    weights=sample_weights,
+                    num_samples=len(train_dataset),
+                    replacement=True
+                )
+                train_loader = DataLoader(
+                    train_dataset, 
+                    batch_size=BATCH_SIZE, 
+                    sampler=train_sampler,
+                    num_workers=workers, 
+                    pin_memory=True, 
+                    collate_fn=collate_fn_skip_none,
+                    prefetch_factor=2 if workers > 0 else None,
+                    persistent_workers=workers > 0,
+                    timeout=60 if workers > 0 else 0
+                )
+                logger.info(f"Using NCR-weighted sampling (power={NCR_WEIGHT_POWER})")
+            else:
+                train_loader = DataLoader(
+                    train_dataset, 
+                    batch_size=BATCH_SIZE, 
+                    shuffle=True,
+                    num_workers=workers, 
+                    pin_memory=True, 
+                    collate_fn=collate_fn_skip_none,
+                    prefetch_factor=2 if workers > 0 else None,
+                    persistent_workers=workers > 0,
+                    timeout=60 if workers > 0 else 0
+                )
         
         val_loader = DataLoader(
             val_dataset, 
