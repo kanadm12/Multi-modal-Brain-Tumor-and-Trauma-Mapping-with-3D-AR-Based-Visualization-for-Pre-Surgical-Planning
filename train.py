@@ -1284,10 +1284,10 @@ class BraTSRegionLoss(nn.Module):
         target_tc = ((target == 1) | (target == 3)).float()  # NCR + ET
         target_et = (target == 3).float()  # ET only
         
-        # Dice loss for each region
+        # Dice loss for each region (use reshape instead of view for non-contiguous tensors)
         def dice_loss(pred_r, target_r):
-            pred_flat = pred_r.view(-1)
-            target_flat = target_r.view(-1)
+            pred_flat = pred_r.reshape(-1)
+            target_flat = target_r.reshape(-1)
             intersection = (pred_flat * target_flat).sum()
             return 1 - (2 * intersection + self.smooth) / (pred_flat.sum() + target_flat.sum() + self.smooth)
         
