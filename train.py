@@ -227,11 +227,10 @@ GRADIENT_CLIP_VALUE = 0.5  # Reduced for more stable gradients
 RESUME_TRAINING = True if CLOUD_PLATFORM == 'runpod' else False
 RESUME_CHECKPOINT_PATH = None  # Auto-detect latest checkpoint if None
 
-# Class weights for loss - ET BOOSTED
-# E64: NCR=0.55, ED=0.83, but ET=0.009 (collapsed!)
-# NCR now learning well with anatomical constraint
-# ET needs higher weight - it's the smallest and most important class clinically
-CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 3.0])  # ET=3.0x to recover from collapse
+# Class weights for loss - BALANCED
+# E56 showed ET=3.0 caused massive over-prediction (1.87M pred vs 4.2K target!)
+# Solution: Reduce ET weight, add false positive penalty instead
+CLASS_WEIGHTS = torch.tensor([0.0, 1.5, 1.0, 1.5])  # Balanced: NCR=ET=1.5, ED=1.0
 
 # Loss function weights - OPTIMIZED for both Dice and HD95
 LOSS_DICE_WEIGHT = 0.45
@@ -1355,22 +1354,65 @@ class NCRAnatomicalConstraintLoss(nn.Module):
         return loss.clamp(min=0)  # Don't go negative
 
 
+class ETFalsePositiveLoss(nn.Module):
+    """ET False Positive Loss - Penalizes ET predictions outside tumor
+    
+    Problem: E56 showed ET over-prediction (1.87M pred vs 4.2K target = 443x!)
+    ET weight=3.0 was too aggressive, model learned to predict ET everywhere.
+    
+    This loss heavily penalizes:
+    - ET predictions in background (class 0)
+    - ET predictions in ED regions (class 2) where there's no actual ET
+    
+    ET should be a SUBSET of tumor, surrounded by ED or at tumor edge.
+    """
+    def __init__(self, bg_penalty=3.0, ed_penalty=1.0):
+        super().__init__()
+        self.bg_penalty = bg_penalty  # Heavy penalty for ET in background
+        self.ed_penalty = ed_penalty  # Lighter penalty for ET in ED (edge cases)
+    
+    def forward(self, pred, target):
+        pred_prob = F.softmax(pred, dim=1)
+        et_prob = pred_prob[:, 3]  # ET probability
+        
+        # Where is background vs tumor?
+        is_background = (target == 0).float()
+        is_ed = (target == 2).float()
+        is_actual_et = (target == 3).float()
+        
+        # Major penalty: ET predicted in background
+        bg_count = is_background.sum() + 1e-6
+        et_in_bg = (et_prob * is_background).sum() / bg_count
+        
+        # Minor penalty: ET predicted in ED (mild penalty since boundaries can be fuzzy)
+        ed_count = is_ed.sum() + 1e-6
+        et_in_ed = (et_prob * is_ed).sum() / ed_count
+        
+        # Bonus: encourage ET where actual ET exists
+        et_count = is_actual_et.sum() + 1e-6
+        et_correct = (et_prob * is_actual_et).sum() / et_count
+        
+        loss = self.bg_penalty * et_in_bg + self.ed_penalty * et_in_ed - 0.5 * et_correct
+        return loss.clamp(min=0)
+
+
 class CombinedLoss(nn.Module):
     """Ultimate Combined Loss for BraTS Segmentation
     
-    Optimized combination of 7 loss functions:
-    - Dice: Primary spatial overlap metric (0.30)
-    - BraTS Region: DIRECTLY optimizes WT/TC/ET (0.20) ← NEW & CRITICAL
+    Optimized combination of 8 loss functions:
+    - Dice: Primary spatial overlap metric (0.25)
+    - BraTS Region: DIRECTLY optimizes WT/TC/ET (0.20)
     - Boundary: GPU-accelerated edge focus for HD95 (0.15)
     - Tversky/FocalTversky: Class imbalance handling (0.10)
     - Lovasz: IoU optimization (0.10)
-    - FocalCE: Prevents over-prediction of minority classes (0.10)
+    - FocalCE: Prevents over-prediction of minority classes (0.05)
     - NCR Anatomical: Forces NCR inside tumor only (0.05)
+    - ET False Positive: Prevents ET over-prediction (0.10) ← NEW
     
     Expected improvement over baseline: +5-8% Dice, -30-50% HD95
     """
-    def __init__(self, dice_weight=0.30, boundary_weight=0.15, 
-                 tversky_weight=0.10, lovasz_weight=0.10, ce_weight=0.10, 
+    def __init__(self, dice_weight=0.25, boundary_weight=0.15, 
+                 tversky_weight=0.10, lovasz_weight=0.10, ce_weight=0.05, 
                  class_weights=None, label_smoothing=0.1):
         super().__init__()
         self.dice_weight = dice_weight
@@ -1378,11 +1420,12 @@ class CombinedLoss(nn.Module):
         self.tversky_weight = tversky_weight
         self.lovasz_weight = lovasz_weight
         self.ce_weight = ce_weight
-        self.brats_region_weight = 0.20  # NEW: Direct region optimization
-        self.ncr_constraint_weight = 0.05  # Anatomical constraint
+        self.brats_region_weight = 0.20  # Direct region optimization
+        self.ncr_constraint_weight = 0.05  # NCR anatomical constraint
+        self.et_fp_weight = 0.10  # NEW: ET false positive penalty
         
         self.dice_loss = DiceLoss(weights=class_weights)
-        self.brats_region_loss = BraTSRegionLoss(wt_weight=1.0, tc_weight=1.0, et_weight=1.5)
+        self.brats_region_loss = BraTSRegionLoss(wt_weight=1.0, tc_weight=1.0, et_weight=1.0)  # ET back to 1.0
         self.boundary_loss = BoundaryLoss()  # GPU-accelerated boundary loss
         self.focal_tversky_loss = FocalTverskyLoss(
             alpha=0.7, beta=0.3, gamma=0.75, class_weights=class_weights
@@ -1395,8 +1438,9 @@ class CombinedLoss(nn.Module):
             label_smoothing=label_smoothing,
             reduction='none'  # For OHEM support
         )
-        # NEW: NCR anatomical constraint
+        # Anatomical constraints
         self.ncr_constraint = NCRAnatomicalConstraintLoss(penalty_weight=2.0)
+        self.et_fp_loss = ETFalsePositiveLoss(bg_penalty=3.0, ed_penalty=1.0)  # NEW
         
         # OHEM settings
         self.use_ohem = USE_OHEM
@@ -1447,13 +1491,17 @@ class CombinedLoss(nn.Module):
         # NCR Anatomical Constraint - prevents NCR in background regions
         ncr_constraint = self.ncr_constraint(pred, target)
         
+        # NEW: ET False Positive Penalty - prevents ET over-prediction
+        et_fp = self.et_fp_loss(pred, target)
+        
         total_loss = (self.dice_weight * dice + 
-                      self.brats_region_weight * brats_region +  # NEW: Direct WT/TC/ET
+                      self.brats_region_weight * brats_region +
                       self.boundary_weight * boundary_factor * boundary +
                       self.tversky_weight * tversky +
                       self.lovasz_weight * lovasz + 
                       self.ce_weight * ce +
-                      self.ncr_constraint_weight * ncr_constraint)
+                      self.ncr_constraint_weight * ncr_constraint +
+                      self.et_fp_weight * et_fp)  # NEW
         
         if return_components:
             return total_loss, {
@@ -1464,6 +1512,7 @@ class CombinedLoss(nn.Module):
                 'lovasz': lovasz.item() if torch.is_tensor(lovasz) else lovasz,
                 'ce': ce.item() if torch.is_tensor(ce) else ce,
                 'ncr_constraint': ncr_constraint.item() if torch.is_tensor(ncr_constraint) else ncr_constraint,
+                'et_fp': et_fp.item() if torch.is_tensor(et_fp) else et_fp,
                 'boundary_factor': boundary_factor
             }
         return total_loss
