@@ -1537,6 +1537,163 @@ def export_obj(mesh_data, output_dir, patient_id="tumor"):
 
 
 # ============================================================================
+# STL EXPORT - For Web Viewer (Three.js) and 3D Printing
+# ============================================================================
+
+def export_stl(mesh_data, output_dir, patient_id="tumor"):
+    """Export meshes to STL format (separate files per region)
+    
+    STL format is ideal for:
+    - Three.js web viewer (color applied in frontend)
+    - 3D printing
+    - Universal compatibility
+    
+    Creates separate files so each region can be toggled independently
+    and colored dynamically in the UI.
+    
+    Args:
+        mesh_data: Dictionary with brain and regions meshes
+        output_dir: Output directory
+        patient_id: Patient identifier for filenames
+        
+    Returns:
+        Dictionary mapping region names to STL file paths
+    """
+    output_dir = Path(output_dir)
+    stl_dir = output_dir / "stl"
+    stl_dir.mkdir(parents=True, exist_ok=True)
+    
+    exported_files = {}
+    
+    def write_stl_binary(vertices, faces, filepath, name):
+        """Write mesh to binary STL format (smaller, faster to load)"""
+        vertices = np.array(vertices, dtype=np.float32)
+        faces = np.array(faces, dtype=np.int32)
+        
+        if len(vertices) == 0 or len(faces) == 0:
+            return False
+        
+        n_triangles = len(faces)
+        
+        with open(filepath, 'wb') as f:
+            # 80 byte header
+            header = f"BraTS {name} - {patient_id}".encode('utf-8')
+            header = header[:80].ljust(80, b'\0')
+            f.write(header)
+            
+            # Number of triangles (4 bytes, little endian)
+            f.write(np.uint32(n_triangles).tobytes())
+            
+            # Write each triangle
+            for face in faces:
+                v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+                
+                # Calculate normal
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = np.cross(edge1, edge2)
+                norm_len = np.linalg.norm(normal)
+                if norm_len > 0:
+                    normal = normal / norm_len
+                else:
+                    normal = np.array([0, 0, 1], dtype=np.float32)
+                
+                # Write: normal (12 bytes) + 3 vertices (36 bytes) + attribute (2 bytes)
+                f.write(normal.astype(np.float32).tobytes())
+                f.write(v0.astype(np.float32).tobytes())
+                f.write(v1.astype(np.float32).tobytes())
+                f.write(v2.astype(np.float32).tobytes())
+                f.write(np.uint16(0).tobytes())  # Attribute byte count
+        
+        return True
+    
+    def write_stl_ascii(vertices, faces, filepath, name):
+        """Write mesh to ASCII STL format (human readable, larger)"""
+        vertices = np.array(vertices, dtype=np.float32)
+        faces = np.array(faces, dtype=np.int32)
+        
+        if len(vertices) == 0 or len(faces) == 0:
+            return False
+        
+        with open(filepath, 'w') as f:
+            f.write(f"solid {name}\n")
+            
+            for face in faces:
+                v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+                
+                # Calculate normal
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = np.cross(edge1, edge2)
+                norm_len = np.linalg.norm(normal)
+                if norm_len > 0:
+                    normal = normal / norm_len
+                else:
+                    normal = np.array([0, 0, 1])
+                
+                f.write(f"  facet normal {normal[0]:.6f} {normal[1]:.6f} {normal[2]:.6f}\n")
+                f.write("    outer loop\n")
+                f.write(f"      vertex {v0[0]:.6f} {v0[1]:.6f} {v0[2]:.6f}\n")
+                f.write(f"      vertex {v1[0]:.6f} {v1[1]:.6f} {v1[2]:.6f}\n")
+                f.write(f"      vertex {v2[0]:.6f} {v2[1]:.6f} {v2[2]:.6f}\n")
+                f.write("    endloop\n")
+                f.write("  endfacet\n")
+            
+            f.write(f"endsolid {name}\n")
+        
+        return True
+    
+    # Region info for manifest
+    region_info = {
+        "brain": {"color": "#E5E5F2", "opacity": 0.15, "label": "Brain Surface"},
+        "NCR": {"color": "#8B0000", "opacity": 1.0, "label": "Necrotic Core"},
+        "ED": {"color": "#FFD700", "opacity": 0.6, "label": "Peritumoral Edema"},
+        "ET": {"color": "#FF0000", "opacity": 1.0, "label": "Enhancing Tumor"},
+    }
+    
+    # Export brain mesh
+    if mesh_data.get("brain") and mesh_data["brain"].get("vertices"):
+        stl_path = stl_dir / f"{patient_id}_brain.stl"
+        if write_stl_binary(mesh_data["brain"]["vertices"], mesh_data["brain"]["faces"], stl_path, "Brain"):
+            exported_files["brain"] = {
+                "file": str(stl_path.name),
+                "path": str(stl_path),
+                **region_info["brain"]
+            }
+            logger.info(f"Brain STL saved: {stl_path}")
+    
+    # Export tumor region meshes
+    for name, data in mesh_data.get("regions", {}).items():
+        if data and data.get("vertices"):
+            stl_path = stl_dir / f"{patient_id}_{name}.stl"
+            if write_stl_binary(data["vertices"], data["faces"], stl_path, name):
+                exported_files[name] = {
+                    "file": str(stl_path.name),
+                    "path": str(stl_path),
+                    **region_info.get(name, {"color": "#FF0000", "opacity": 1.0, "label": name})
+                }
+                logger.info(f"{name} STL saved: {stl_path}")
+    
+    # Create manifest JSON for frontend
+    manifest = {
+        "patient_id": patient_id,
+        "timestamp": datetime.now().isoformat(),
+        "regions": exported_files,
+        "stats": mesh_data.get("stats", {}),
+        "total_tumor_volume_cm3": mesh_data.get("total_tumor_volume_cm3", 0)
+    }
+    
+    manifest_path = stl_dir / f"{patient_id}_manifest.json"
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+    
+    logger.info(f"STL manifest saved: {manifest_path}")
+    logger.info(f"Exported {len(exported_files)} STL files to {stl_dir}")
+    
+    return exported_files, manifest_path
+
+
+# ============================================================================
 # MAIN INFERENCE PIPELINE
 # ============================================================================
 
@@ -1717,6 +1874,10 @@ def main():
     logger.info("Exporting OBJ for Blender...")
     obj_path, mtl_path = export_obj(mesh_data, output_dir, patient_id)
     
+    # Export STL files for web viewer (Three.js)
+    logger.info("Exporting STL files for web viewer...")
+    stl_files, stl_manifest = export_stl(mesh_data, output_dir, patient_id)
+    
     # Save segmentation as NIfTI
     if args.save_nifti:
         # Map back to BraTS labels
@@ -1743,6 +1904,8 @@ def main():
         logger.info(f"  {stat['label']}: {stat['volume_cm3']} cm³")
     logger.info(f"\nOutputs:")
     logger.info(f"  - Interactive HTML viewer: {html_path}")
+    logger.info(f"  - STL files (Web/Three.js): {output_dir}/stl/")
+    logger.info(f"  - STL manifest: {stl_manifest}")
     logger.info(f"  - OBJ+MTL (Blender): {obj_path}")
     logger.info(f"  - VTP meshes (ParaView/3D Slicer): {output_dir}/*.vtp")
     logger.info(f"  - VTK meshes (legacy format): {output_dir}/*.vtk")
@@ -1750,6 +1913,10 @@ def main():
     logger.info(f"  - ParaView script: {output_dir}/{patient_id}_paraview_script.py")
     logger.info(f"  - Mesh data JSON: {json_path}")
     logger.info("="*60)
+    logger.info("\nFor Web Viewer (Three.js):")
+    logger.info(f"  - Use STL files in {output_dir}/stl/")
+    logger.info(f"  - Load manifest: {patient_id}_manifest.json")
+    logger.info(f"  - Apply colors in frontend: NCR=#8B0000, ED=#FFD700, ET=#FF0000")
     logger.info("\nTo view in Blender:")
     logger.info(f"  1. File > Import > Wavefront (.obj)")
     logger.info(f"  2. Select {patient_id}_brain_tumor.obj")
