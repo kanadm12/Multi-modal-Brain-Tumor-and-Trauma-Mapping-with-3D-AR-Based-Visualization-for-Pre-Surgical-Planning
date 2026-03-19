@@ -1431,6 +1431,112 @@ print("Use the Pipeline Browser to toggle regions on/off")
 
 
 # ============================================================================
+# OBJ EXPORT - For Blender, Maya, 3ds Max
+# ============================================================================
+
+def export_obj(mesh_data, output_dir, patient_id="tumor"):
+    """Export meshes to OBJ format with MTL material file
+    
+    OBJ+MTL format is ideal for:
+    - Blender (native import with colors)
+    - Maya, 3ds Max, Cinema 4D
+    - Most 3D software
+    - Each region is a separate object for easy toggling
+    
+    Args:
+        mesh_data: Dictionary with brain and regions meshes
+        output_dir: Output directory
+        patient_id: Patient identifier for filenames
+        
+    Returns:
+        Path to the combined OBJ file
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    obj_path = output_dir / f"{patient_id}_brain_tumor.obj"
+    mtl_path = output_dir / f"{patient_id}_brain_tumor.mtl"
+    
+    # Material definitions with colors
+    materials = {
+        "Brain": {"Kd": [0.9, 0.9, 0.95], "d": 0.15},      # Light gray, transparent
+        "NCR": {"Kd": [0.55, 0.0, 0.0], "d": 1.0},         # Dark red (Necrotic Core)
+        "ED": {"Kd": [1.0, 0.84, 0.0], "d": 0.6},          # Yellow (Edema)
+        "ET": {"Kd": [1.0, 0.0, 0.0], "d": 1.0},           # Bright red (Enhancing Tumor)
+    }
+    
+    # Write MTL file
+    mtl_content = "# BraTS Brain Tumor Materials\n"
+    mtl_content += f"# Patient: {patient_id}\n"
+    mtl_content += "# Colors: NCR=Dark Red, ED=Yellow, ET=Bright Red, Brain=Gray\n\n"
+    
+    for mat_name, props in materials.items():
+        mtl_content += f"newmtl {mat_name}\n"
+        mtl_content += f"Kd {props['Kd'][0]:.3f} {props['Kd'][1]:.3f} {props['Kd'][2]:.3f}\n"
+        mtl_content += f"Ka 0.1 0.1 0.1\n"  # Ambient
+        mtl_content += f"Ks 0.3 0.3 0.3\n"  # Specular
+        mtl_content += f"Ns 50.0\n"          # Shininess
+        mtl_content += f"d {props['d']:.2f}\n"  # Dissolve (transparency)
+        mtl_content += f"illum 2\n\n"
+    
+    with open(mtl_path, 'w') as f:
+        f.write(mtl_content)
+    
+    # Write OBJ file
+    obj_content = f"# BraTS Brain Tumor 3D Model\n"
+    obj_content += f"# Patient: {patient_id}\n"
+    obj_content += f"# Regions: Brain (transparent), NCR (dark red), ED (yellow), ET (bright red)\n"
+    obj_content += f"# Import in Blender: File > Import > Wavefront (.obj)\n"
+    obj_content += f"mtllib {mtl_path.name}\n\n"
+    
+    vertex_offset = 1  # OBJ indices are 1-based
+    
+    def add_mesh_to_obj(mesh_info, material_name):
+        nonlocal vertex_offset, obj_content
+        
+        if not mesh_info or 'vertices' not in mesh_info:
+            return
+        
+        vertices = np.array(mesh_info['vertices'], dtype=np.float32)
+        faces = np.array(mesh_info['faces'], dtype=np.int32)
+        
+        if len(vertices) == 0 or len(faces) == 0:
+            return
+        
+        obj_content += f"# {material_name}\n"
+        obj_content += f"o {material_name}\n"
+        obj_content += f"usemtl {material_name}\n"
+        
+        # Write vertices
+        for v in vertices:
+            obj_content += f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n"
+        
+        # Write faces (with offset for combined file)
+        for f in faces:
+            obj_content += f"f {f[0] + vertex_offset} {f[1] + vertex_offset} {f[2] + vertex_offset}\n"
+        
+        vertex_offset += len(vertices)
+        obj_content += "\n"
+    
+    # Add brain mesh
+    if mesh_data.get("brain") and mesh_data["brain"].get("vertices"):
+        add_mesh_to_obj(mesh_data["brain"], "Brain")
+    
+    # Add tumor region meshes
+    for name, data in mesh_data.get("regions", {}).items():
+        if data and data.get("vertices"):
+            add_mesh_to_obj(data, name)
+    
+    with open(obj_path, 'w') as f:
+        f.write(obj_content)
+    
+    logger.info(f"OBJ model saved to: {obj_path}")
+    logger.info(f"MTL materials saved to: {mtl_path}")
+    
+    return obj_path, mtl_path
+
+
+# ============================================================================
 # MAIN INFERENCE PIPELINE
 # ============================================================================
 
@@ -1607,6 +1713,10 @@ def main():
     # Create ParaView helper script
     create_paraview_state(output_dir, patient_id, vtp_files)
     
+    # Export OBJ+MTL for Blender
+    logger.info("Exporting OBJ for Blender...")
+    obj_path, mtl_path = export_obj(mesh_data, output_dir, patient_id)
+    
     # Save segmentation as NIfTI
     if args.save_nifti:
         # Map back to BraTS labels
@@ -1633,16 +1743,20 @@ def main():
         logger.info(f"  {stat['label']}: {stat['volume_cm3']} cm³")
     logger.info(f"\nOutputs:")
     logger.info(f"  - Interactive HTML viewer: {html_path}")
+    logger.info(f"  - OBJ+MTL (Blender): {obj_path}")
     logger.info(f"  - VTP meshes (ParaView/3D Slicer): {output_dir}/*.vtp")
     logger.info(f"  - VTK meshes (legacy format): {output_dir}/*.vtk")
     logger.info(f"  - VTI volume: {vti_path}")
     logger.info(f"  - ParaView script: {output_dir}/{patient_id}_paraview_script.py")
     logger.info(f"  - Mesh data JSON: {json_path}")
     logger.info("="*60)
+    logger.info("\nTo view in Blender:")
+    logger.info(f"  1. File > Import > Wavefront (.obj)")
+    logger.info(f"  2. Select {patient_id}_brain_tumor.obj")
+    logger.info(f"  3. Materials/colors load automatically from .mtl")
+    logger.info(f"  4. Toggle regions in Outliner (eye icon)")
     logger.info("\nTo view in ParaView:")
-    logger.info(f"  1. Open ParaView")
-    logger.info(f"  2. File > Open > Select {patient_id}_combined.vtm")
-    logger.info(f"  3. Or run the Python script in Tools > Python Shell")
+    logger.info(f"  1. File > Open > Select {patient_id}_combined.vtm")
 
 
 if __name__ == '__main__':
