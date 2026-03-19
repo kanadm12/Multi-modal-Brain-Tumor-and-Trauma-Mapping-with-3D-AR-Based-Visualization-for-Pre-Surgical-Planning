@@ -41,6 +41,7 @@ from scipy.ndimage import (
     label as ndimage_label, binary_closing, binary_opening,
     gaussian_filter, binary_fill_holes, generate_binary_structure
 )
+from sklearn.model_selection import KFold
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -62,6 +63,9 @@ DROPOUT_RATE = 0.12
 
 # TTA Configuration
 TTA_TRANSFORMS = 12  # 12-point TTA
+
+# Cross-validation (must match training)
+N_FOLDS = 3
 
 # Post-processing
 MIN_COMPONENT_SIZE = 100
@@ -810,7 +814,25 @@ def run_evaluation(args):
         if os.path.isdir(os.path.join(args.data_dir, d)) and d.startswith('BraTS')
     ])
     
-    logger.info(f"Found {len(patient_dirs)} patients in {args.data_dir}")
+    logger.info(f"Found {len(patient_dirs)} total patients in {args.data_dir}")
+    
+    # Use the same KFold split as training to get test set
+    patient_ids = np.array(patient_dirs)
+    kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    
+    # Get the test indices for the specified fold
+    fold_idx = args.fold
+    for i, (train_idx, test_idx) in enumerate(kf.split(patient_ids)):
+        if i == fold_idx:
+            test_patient_ids = patient_ids[test_idx].tolist()
+            train_patient_ids = patient_ids[train_idx].tolist()
+            break
+    
+    logger.info(f"Fold {fold_idx}: {len(train_patient_ids)} train, {len(test_patient_ids)} test patients")
+    logger.info(f"Evaluating on {len(test_patient_ids)} TEST patients only")
+    
+    # Use test patients for evaluation
+    patient_dirs = test_patient_ids
     
     # Optionally limit patients
     if args.max_patients:
@@ -985,11 +1007,16 @@ Examples:
 
   # Quick test with fewer TTA
   python evaluate_test.py --checkpoint model.pth --data_dir /data --num_tta 4 --max_patients 10
+
+  # Evaluate specific fold
+  python evaluate_test.py --checkpoint fold_1_best.pth --data_dir /data --fold 1
         """
     )
     
     parser.add_argument('--checkpoint', type=str, required=True,
                         help='Path to model checkpoint (e.g., fold_0_best.pth)')
+    parser.add_argument('--fold', type=int, default=0,
+                        help='Fold index to evaluate (0, 1, or 2). Must match checkpoint. Default: 0')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to test data directory')
     parser.add_argument('--output_dir', type=str, default=None,
