@@ -250,48 +250,65 @@ class MultiHeadSelfAttention3D(nn.Module):
     """Multi-head self-attention for 3D"""
     def __init__(self, channels, num_heads=8):
         super().__init__()
+        assert channels % num_heads == 0
+        
+        self.channels = channels
         self.num_heads = num_heads
         self.head_dim = channels // num_heads
         self.scale = self.head_dim ** -0.5
         
-        self.qkv = nn.Conv3d(channels, channels * 3, 1, bias=False)
-        self.proj = nn.Conv3d(channels, channels, 1)
-        self.norm = nn.LayerNorm([channels])
+        self.qkv = nn.Linear(channels, channels * 3)
+        self.proj = nn.Linear(channels, channels)
+        self.norm1 = nn.LayerNorm(channels)
+        self.norm2 = nn.LayerNorm(channels)
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(channels, channels * 4),
+            nn.GELU(),
+            nn.Linear(channels * 4, channels)
+        )
     
     def forward(self, x):
         B, C, D, H, W = x.shape
-        N = D * H * W
+        x_flat = x.reshape(B, C, -1).permute(0, 2, 1)  # (B, N, C)
         
-        qkv = self.qkv(x).reshape(B, 3, self.num_heads, self.head_dim, N)
-        qkv = qkv.permute(1, 0, 2, 4, 3)
+        # Self-attention
+        qkv = self.qkv(x_flat)
+        qkv = qkv.reshape(B, -1, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
+        attn = F.softmax(attn, dim=-1)
+        x_attn = (attn @ v).transpose(1, 2).reshape(B, -1, C)
         
-        out = (attn @ v).transpose(-2, -1).reshape(B, C, D, H, W)
-        out = self.proj(out)
+        x_attn = self.norm1(x_flat + self.proj(x_attn))
+        x_attn = self.norm2(x_attn + self.mlp(x_attn))
         
-        return out + x
+        return x_attn.permute(0, 2, 1).reshape(B, C, D, H, W)
 
 
 class TransformerBottleneck(nn.Module):
     """Transformer bottleneck with multi-head attention"""
     def __init__(self, channels, num_heads=8, depth=2):
         super().__init__()
+        self.conv_in = nn.Conv3d(channels, channels, 1)
+        
         self.layers = nn.ModuleList([
-            nn.Sequential(
-                MultiHeadSelfAttention3D(channels, num_heads),
-                nn.Conv3d(channels, channels * 4, 1),
-                nn.GELU(),
-                nn.Conv3d(channels * 4, channels, 1),
-            ) for _ in range(depth)
+            MultiHeadSelfAttention3D(channels, num_heads) for _ in range(depth)
         ])
+        
+        self.conv_out = nn.Conv3d(channels, channels, 1)
+        self.norm = nn.InstanceNorm3d(channels)
     
     def forward(self, x):
+        x = self.conv_in(x)
+        identity = x
+        
         for layer in self.layers:
-            x = x + layer(x)
-        return x
+            x = layer(x)
+        
+        x = self.conv_out(x)
+        return self.norm(x + identity)
 
 
 class LightweightAttention3D(nn.Module):
