@@ -8,13 +8,20 @@ Complete pipeline from MRI input to 3D interactive visualization:
 2. Run inference with trained model (with optional TTA)
 3. Generate 3D meshes for each tumor region
 4. Export to interactive HTML viewer with region toggle controls
-5. Export GLTF for AR applications
+5. Export VTK/VTP/VTI files for ParaView and 3D Slicer
 
-Tumor Regions:
-- NCR (Necrotic Core): Dark Red - Class 1
-- ED (Edema): Yellow (semi-transparent) - Class 2  
-- ET (Enhancing Tumor): Bright Red - Class 3
-- Brain Surface: Light blue-gray (very transparent)
+Tumor Regions (with colors):
+- NCR (Necrotic Core): Dark Red #8B0000 - Class 1
+- ED (Edema): Yellow #FFD700 (semi-transparent) - Class 2  
+- ET (Enhancing Tumor): Bright Red #FF0000 - Class 3
+- Brain Surface: Light blue-gray #E5E5F2 (very transparent)
+
+Output Formats:
+- .vtp: VTK XML PolyData - Best for ParaView/3D Slicer with colors
+- .vtk: Legacy VTK format - Maximum compatibility
+- .vti: VTK ImageData - Volumetric segmentation
+- .vtm: VTK MultiBlock - Combined file for easy loading
+- .html: Interactive browser-based 3D viewer
 
 Usage:
     python inference_3d.py --checkpoint model.pth --patient_dir /path/to/patient --output_dir /output
@@ -1104,112 +1111,323 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 # ============================================================================
-# GLTF EXPORT
+# VTK/VTP EXPORT - Better for Medical Visualization
 # ============================================================================
 
-def export_gltf(mesh_data, output_path):
-    """Export meshes to GLTF format for AR"""
-    gltf = {
-        "asset": {"version": "2.0", "generator": "BraTS 3D Pipeline"},
-        "scene": 0,
-        "scenes": [{"nodes": []}],
-        "nodes": [],
-        "meshes": [],
-        "accessors": [],
-        "bufferViews": [],
-        "buffers": [],
-        "materials": []
-    }
+def export_vtp(mesh_data, output_dir, patient_id="tumor"):
+    """Export meshes to VTK XML PolyData (.vtp) format with colors
     
-    buffer_data = bytearray()
-    node_idx = 0
+    VTP format is ideal for:
+    - ParaView visualization
+    - 3D Slicer
+    - Medical imaging applications
+    - Preserves per-region colors
     
-    def add_mesh(mesh_info, name, color):
-        nonlocal node_idx
-        if not mesh_info or 'vertices' not in mesh_info:
-            return
-        
-        vertices = np.array(mesh_info['vertices'], dtype=np.float32)
-        faces = np.array(mesh_info['faces'], dtype=np.uint32)
+    Args:
+        mesh_data: Dictionary with brain and regions meshes
+        output_dir: Output directory
+        patient_id: Patient identifier for filenames
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    def write_vtp_file(vertices, faces, color_rgb, opacity, filepath, name):
+        """Write a single mesh to VTP format"""
+        vertices = np.array(vertices, dtype=np.float32)
+        faces = np.array(faces, dtype=np.int32)
         
         if len(vertices) == 0 or len(faces) == 0:
-            return
+            return False
         
-        # Vertices
-        v_min, v_max = vertices.min(axis=0), vertices.max(axis=0)
-        buf_offset = len(buffer_data)
-        buffer_data.extend(vertices.tobytes())
+        n_points = len(vertices)
+        n_cells = len(faces)
         
-        pos_acc = len(gltf["accessors"])
-        gltf["bufferViews"].append({
-            "buffer": 0, "byteOffset": buf_offset,
-            "byteLength": len(vertices) * 12, "target": 34962
-        })
-        gltf["accessors"].append({
-            "bufferView": len(gltf["bufferViews"]) - 1,
-            "componentType": 5126, "count": len(vertices),
-            "type": "VEC3", "min": v_min.tolist(), "max": v_max.tolist()
-        })
+        # Convert color to 0-255 range
+        r, g, b = int(color_rgb[0] * 255), int(color_rgb[1] * 255), int(color_rgb[2] * 255)
+        a = int(opacity * 255)
         
-        # Indices
-        indices = faces.flatten().astype(np.uint32)
-        buf_offset = len(buffer_data)
-        buffer_data.extend(indices.tobytes())
+        # Create VTP XML content
+        vtp_content = f'''<?xml version="1.0"?>
+<VTKFile type="PolyData" version="1.0" byte_order="LittleEndian">
+  <PolyData>
+    <Piece NumberOfPoints="{n_points}" NumberOfVerts="0" NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="{n_cells}">
+      <PointData>
+        <DataArray type="UInt8" Name="Colors" NumberOfComponents="4" format="ascii">
+'''
+        # Add per-vertex colors (same color for all vertices in this region)
+        for _ in range(n_points):
+            vtp_content += f"          {r} {g} {b} {a}\n"
         
-        idx_acc = len(gltf["accessors"])
-        gltf["bufferViews"].append({
-            "buffer": 0, "byteOffset": buf_offset,
-            "byteLength": len(indices) * 4, "target": 34963
-        })
-        gltf["accessors"].append({
-            "bufferView": len(gltf["bufferViews"]) - 1,
-            "componentType": 5125, "count": len(indices), "type": "SCALAR"
-        })
+        vtp_content += '''        </DataArray>
+      </PointData>
+      <Points>
+        <DataArray type="Float32" NumberOfComponents="3" format="ascii">
+'''
+        # Add vertices
+        for v in vertices:
+            vtp_content += f"          {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n"
         
-        # Material
-        mat_idx = len(gltf["materials"])
-        gltf["materials"].append({
-            "name": f"{name}_mat",
-            "pbrMetallicRoughness": {
-                "baseColorFactor": color,
-                "metallicFactor": 0.0, "roughnessFactor": 0.8
-            },
-            "alphaMode": "BLEND" if color[3] < 1.0 else "OPAQUE",
-            "doubleSided": True
-        })
+        vtp_content += '''        </DataArray>
+      </Points>
+      <Polys>
+        <DataArray type="Int32" Name="connectivity" format="ascii">
+'''
+        # Add face connectivity
+        for f in faces:
+            vtp_content += f"          {f[0]} {f[1]} {f[2]}\n"
         
-        # Mesh
-        mesh_idx = len(gltf["meshes"])
-        gltf["meshes"].append({
-            "name": name,
-            "primitives": [{"attributes": {"POSITION": pos_acc}, "indices": idx_acc, "material": mat_idx}]
-        })
+        vtp_content += '''        </DataArray>
+        <DataArray type="Int32" Name="offsets" format="ascii">
+'''
+        # Add offsets (each triangle has 3 vertices)
+        for i in range(1, n_cells + 1):
+            vtp_content += f"          {i * 3}\n"
         
-        # Node
-        gltf["nodes"].append({"name": name, "mesh": mesh_idx})
-        gltf["scenes"][0]["nodes"].append(node_idx)
-        node_idx += 1
+        vtp_content += '''        </DataArray>
+      </Polys>
+    </Piece>
+  </PolyData>
+</VTKFile>
+'''
+        
+        with open(filepath, 'w') as f:
+            f.write(vtp_content)
+        
+        return True
     
-    # Add brain
-    if mesh_data.get("brain"):
-        add_mesh(mesh_data["brain"], "Brain", BRAIN_COLOR["color"])
+    exported_files = []
     
-    # Add tumor regions
+    # Export brain mesh
+    if mesh_data.get("brain") and mesh_data["brain"].get("vertices"):
+        brain_path = output_dir / f"{patient_id}_brain.vtp"
+        brain = mesh_data["brain"]
+        color = brain.get("color", BRAIN_COLOR["color"])
+        if write_vtp_file(brain["vertices"], brain["faces"], color[:3], color[3], brain_path, "Brain"):
+            exported_files.append(brain_path)
+            logger.info(f"Brain mesh saved to: {brain_path}")
+    
+    # Export tumor region meshes
     for name, data in mesh_data.get("regions", {}).items():
-        color = data.get("color", [1, 0, 0, 1])
-        add_mesh(data, name, color)
+        if data and data.get("vertices"):
+            region_path = output_dir / f"{patient_id}_{name}.vtp"
+            color = data.get("color", [1, 0, 0, 1])
+            if write_vtp_file(data["vertices"], data["faces"], color[:3], color[3], region_path, name):
+                exported_files.append(region_path)
+                logger.info(f"{name} mesh saved to: {region_path}")
     
-    # Save
-    if buffer_data:
-        bin_path = Path(output_path).with_suffix('.bin')
-        with open(bin_path, 'wb') as f:
-            f.write(buffer_data)
-        gltf["buffers"].append({"uri": bin_path.name, "byteLength": len(buffer_data)})
+    # Create a combined multi-block VTM file for easy loading
+    vtm_path = output_dir / f"{patient_id}_combined.vtm"
+    write_vtm_file(exported_files, vtm_path, patient_id)
+    
+    return exported_files
+
+
+def write_vtm_file(vtp_files, output_path, patient_id):
+    """Write VTK MultiBlock file (.vtm) that references all VTP files"""
+    vtm_content = '''<?xml version="1.0"?>
+<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">
+  <vtkMultiBlockDataSet>
+'''
+    for i, vtp_file in enumerate(vtp_files):
+        name = Path(vtp_file).stem.replace(f"{patient_id}_", "")
+        vtm_content += f'    <DataSet index="{i}" name="{name}" file="{Path(vtp_file).name}"/>\n'
+    
+    vtm_content += '''  </vtkMultiBlockDataSet>
+</VTKFile>
+'''
     
     with open(output_path, 'w') as f:
-        json.dump(gltf, f, indent=2)
+        f.write(vtm_content)
     
-    logger.info(f"GLTF model saved to: {output_path}")
+    logger.info(f"Combined VTM file saved to: {output_path}")
+
+
+def export_vti(segmentation, output_path, spacing=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)):
+    """Export segmentation volume to VTK ImageData (.vti) format
+    
+    VTI format preserves:
+    - Full 3D volumetric data
+    - Spacing information
+    - Can be loaded in ParaView/3D Slicer
+    - Supports color mapping by label
+    
+    Args:
+        segmentation: 3D numpy array with labels (0=BG, 1=NCR, 2=ED, 3=ET)
+        output_path: Output file path
+        spacing: Voxel spacing in mm
+        origin: Volume origin coordinates
+    """
+    seg = np.asarray(segmentation, dtype=np.uint8)
+    
+    # VTI expects Fortran order (x, y, z) but numpy is C order (z, y, x)
+    # We'll write in the native order and specify dimensions accordingly
+    nz, ny, nx = seg.shape
+    
+    vti_content = f'''<?xml version="1.0"?>
+<VTKFile type="ImageData" version="1.0" byte_order="LittleEndian">
+  <ImageData WholeExtent="0 {nx-1} 0 {ny-1} 0 {nz-1}" Origin="{origin[0]} {origin[1]} {origin[2]}" Spacing="{spacing[0]} {spacing[1]} {spacing[2]}">
+    <Piece Extent="0 {nx-1} 0 {ny-1} 0 {nz-1}">
+      <PointData Scalars="Labels">
+        <DataArray type="UInt8" Name="Labels" format="ascii">
+'''
+    
+    # Flatten and write data (VTK expects x-fastest order)
+    # Transpose from (z,y,x) to (x,y,z) order
+    seg_vtk = np.transpose(seg, (2, 1, 0)).flatten()
+    
+    # Write in chunks for readability
+    chunk_size = 20
+    for i in range(0, len(seg_vtk), chunk_size):
+        chunk = seg_vtk[i:i+chunk_size]
+        vti_content += "          " + " ".join(map(str, chunk)) + "\n"
+    
+    vti_content += '''        </DataArray>
+      </PointData>
+    </Piece>
+  </ImageData>
+</VTKFile>
+'''
+    
+    with open(output_path, 'w') as f:
+        f.write(vti_content)
+    
+    logger.info(f"VTI volume saved to: {output_path}")
+
+
+def export_vtk_legacy(mesh_data, output_dir, patient_id="tumor"):
+    """Export meshes to legacy VTK format (.vtk) - maximum compatibility
+    
+    Legacy VTK format works with almost all VTK-compatible software.
+    Creates separate files for each region with embedded colors.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    def write_vtk_polydata(vertices, faces, color_rgb, filepath, name):
+        """Write mesh to legacy VTK polydata format"""
+        vertices = np.array(vertices, dtype=np.float32)
+        faces = np.array(faces, dtype=np.int32)
+        
+        if len(vertices) == 0 or len(faces) == 0:
+            return False
+        
+        n_points = len(vertices)
+        n_cells = len(faces)
+        
+        # Convert color to 0-255
+        r, g, b = int(color_rgb[0] * 255), int(color_rgb[1] * 255), int(color_rgb[2] * 255)
+        
+        vtk_content = f'''# vtk DataFile Version 3.0
+{name} - BraTS 3D Segmentation
+ASCII
+DATASET POLYDATA
+POINTS {n_points} float
+'''
+        # Add vertices
+        for v in vertices:
+            vtk_content += f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n"
+        
+        vtk_content += f"\nPOLYGONS {n_cells} {n_cells * 4}\n"
+        
+        # Add faces (prefixed with vertex count = 3 for triangles)
+        for f in faces:
+            vtk_content += f"3 {f[0]} {f[1]} {f[2]}\n"
+        
+        # Add color data
+        vtk_content += f"\nPOINT_DATA {n_points}\n"
+        vtk_content += "COLOR_SCALARS colors 3\n"
+        
+        # Normalized RGB colors (0-1 range for COLOR_SCALARS)
+        r_norm, g_norm, b_norm = color_rgb[0], color_rgb[1], color_rgb[2]
+        for _ in range(n_points):
+            vtk_content += f"{r_norm:.3f} {g_norm:.3f} {b_norm:.3f}\n"
+        
+        with open(filepath, 'w') as f:
+            f.write(vtk_content)
+        
+        return True
+    
+    exported_files = []
+    
+    # Export brain
+    if mesh_data.get("brain") and mesh_data["brain"].get("vertices"):
+        brain_path = output_dir / f"{patient_id}_brain.vtk"
+        brain = mesh_data["brain"]
+        color = brain.get("color", BRAIN_COLOR["color"])
+        if write_vtk_polydata(brain["vertices"], brain["faces"], color[:3], brain_path, "Brain"):
+            exported_files.append(brain_path)
+    
+    # Export tumor regions
+    for name, data in mesh_data.get("regions", {}).items():
+        if data and data.get("vertices"):
+            region_path = output_dir / f"{patient_id}_{name}.vtk"
+            color = data.get("color", [1, 0, 0, 1])
+            if write_vtk_polydata(data["vertices"], data["faces"], color[:3], region_path, name):
+                exported_files.append(region_path)
+    
+    logger.info(f"Exported {len(exported_files)} VTK files to {output_dir}")
+    return exported_files
+
+
+def create_paraview_state(output_dir, patient_id, vtp_files):
+    """Create a ParaView state file (.pvsm) for easy loading with preset colors"""
+    
+    # Color lookup table for tumor regions
+    color_map = {
+        "brain": {"rgb": [0.9, 0.9, 0.95], "opacity": 0.15},
+        "NCR": {"rgb": [0.55, 0.0, 0.0], "opacity": 1.0},  # Dark red
+        "ED": {"rgb": [1.0, 0.84, 0.0], "opacity": 0.6},   # Yellow
+        "ET": {"rgb": [1.0, 0.0, 0.0], "opacity": 1.0},    # Bright red
+    }
+    
+    # Create a simple Python script for ParaView instead of .pvsm
+    script_content = f'''# ParaView Python Script - {patient_id}
+# Run this script in ParaView: Tools > Python Shell > Run Script
+
+from paraview.simple import *
+
+# Set background
+view = GetActiveViewOrCreate('RenderView')
+view.Background = [0.1, 0.1, 0.15]
+
+# Color definitions
+colors = {{
+    "brain": ([0.9, 0.9, 0.95], 0.15),
+    "NCR": ([0.55, 0.0, 0.0], 1.0),
+    "ED": ([1.0, 0.84, 0.0], 0.6),
+    "ET": ([1.0, 0.0, 0.0], 1.0),
+}}
+
+# Load and display each region
+import os
+script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else r"{output_dir}"
+
+for name, (rgb, opacity) in colors.items():
+    filepath = os.path.join(script_dir, f"{patient_id}_{{name}}.vtp")
+    if os.path.exists(filepath):
+        reader = XMLPolyDataReader(FileName=[filepath])
+        display = Show(reader, view)
+        display.Representation = 'Surface'
+        display.DiffuseColor = rgb
+        display.Opacity = opacity
+        display.Specular = 0.3
+        RenameSource(name, reader)
+        print(f"Loaded: {{name}}")
+
+# Reset camera
+view.ResetCamera()
+Render()
+
+print("\\n=== BraTS 3D Visualization Loaded ===")
+print("Use the Pipeline Browser to toggle regions on/off")
+'''
+    
+    script_path = output_dir / f"{patient_id}_paraview_script.py"
+    with open(script_path, 'w') as f:
+        f.write(script_content)
+    
+    logger.info(f"ParaView script saved to: {script_path}")
+    return script_path
 
 
 # ============================================================================
@@ -1375,9 +1593,19 @@ def main():
     html_path = output_dir / "viewer.html"
     generate_interactive_html(mesh_data, html_path, patient_id)
     
-    # Export GLTF for AR
-    gltf_path = output_dir / "brain_model.gltf"
-    export_gltf(mesh_data, gltf_path)
+    # Export VTK files (VTP format with colors)
+    logger.info("Exporting VTK files...")
+    vtp_files = export_vtp(mesh_data, output_dir, patient_id)
+    
+    # Export legacy VTK format for maximum compatibility
+    export_vtk_legacy(mesh_data, output_dir, patient_id)
+    
+    # Export volumetric segmentation as VTI
+    vti_path = output_dir / f"{patient_id}_segmentation.vti"
+    export_vti(prediction, vti_path)
+    
+    # Create ParaView helper script
+    create_paraview_state(output_dir, patient_id, vtp_files)
     
     # Save segmentation as NIfTI
     if args.save_nifti:
@@ -1404,10 +1632,17 @@ def main():
     for name, stat in mesh_data['stats'].items():
         logger.info(f"  {stat['label']}: {stat['volume_cm3']} cm³")
     logger.info(f"\nOutputs:")
-    logger.info(f"  - Interactive viewer: {html_path}")
-    logger.info(f"  - GLTF model (AR): {gltf_path}")
-    logger.info(f"  - Mesh data: {json_path}")
+    logger.info(f"  - Interactive HTML viewer: {html_path}")
+    logger.info(f"  - VTP meshes (ParaView/3D Slicer): {output_dir}/*.vtp")
+    logger.info(f"  - VTK meshes (legacy format): {output_dir}/*.vtk")
+    logger.info(f"  - VTI volume: {vti_path}")
+    logger.info(f"  - ParaView script: {output_dir}/{patient_id}_paraview_script.py")
+    logger.info(f"  - Mesh data JSON: {json_path}")
     logger.info("="*60)
+    logger.info("\nTo view in ParaView:")
+    logger.info(f"  1. Open ParaView")
+    logger.info(f"  2. File > Open > Select {patient_id}_combined.vtm")
+    logger.info(f"  3. Or run the Python script in Tools > Python Shell")
 
 
 if __name__ == '__main__':
