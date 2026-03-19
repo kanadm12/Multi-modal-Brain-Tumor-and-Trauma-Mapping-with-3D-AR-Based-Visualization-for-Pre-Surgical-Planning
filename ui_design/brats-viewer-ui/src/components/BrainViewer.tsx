@@ -4,12 +4,40 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { MeshResponse } from '@/services/api';
 
+// STL Region interface for manifest
+export interface STLRegion {
+  name: string;
+  file: string;
+  path?: string;
+  url?: string;
+  color: string;
+  opacity: number;
+  label: string;
+}
+
+export interface STLManifest {
+  patient_id: string;
+  timestamp?: string;
+  regions: STLRegion[];  // Array of regions
+  stats?: {
+    [key: string]: {
+      label: string;
+      volume_cm3: number;
+      description?: string;
+    };
+  };
+  total_tumor_volume_cm3?: number;
+}
+
 interface BrainViewerProps {
-  meshData: MeshResponse | null;
-  glbUrl?: string | null;  // New prop for GLB file URL
+  meshData?: MeshResponse | null;
+  glbUrl?: string | null;
+  stlManifest?: STLManifest | null;  // New: STL manifest with region info
+  stlBaseUrl?: string;  // Base URL for STL files
   loading?: boolean;
   showBrain?: boolean;
   showNCR?: boolean;
@@ -19,16 +47,27 @@ interface BrainViewerProps {
   scale?: number;
 }
 
-// Tumor class colors
+// Tumor class colors (hex values)
 const TUMOR_COLORS = {
-  NCR: 0x8B0000, // Dark Red
-  ED: 0xFFD700,  // Yellow  
-  ET: 0xFF0000,  // Bright Red
+  brain: 0xE5E5F2, // Light gray
+  NCR: 0x8B0000,   // Dark Red
+  ED: 0xFFD700,    // Yellow  
+  ET: 0xFF0000,    // Bright Red
+};
+
+// Default opacities
+const DEFAULT_OPACITIES: { [key: string]: number } = {
+  brain: 0.15,
+  NCR: 1.0,
+  ED: 0.6,
+  ET: 1.0,
 };
 
 const BrainViewer: React.FC<BrainViewerProps> = ({
-  meshData,
+  meshData = null,
   glbUrl = null,
+  stlManifest = null,
+  stlBaseUrl = '',
   loading = false,
   showBrain = true,
   showNCR = true,
@@ -45,6 +84,8 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
   const meshGroupRef = useRef<THREE.Group | null>(null);
   const animationIdRef = useRef<number | null>(null);
   const [glbLoading, setGlbLoading] = useState(false);
+  const [stlLoading, setStlLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
 
   const [isInitialized, setIsInitialized] = useState(false);
 
@@ -415,7 +456,118 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
     );
   }, [glbUrl, isInitialized]);
 
-  const isLoading = loading || glbLoading;
+  // Load STL files when stlManifest is provided
+  useEffect(() => {
+    if (!stlManifest || !meshGroupRef.current || !isInitialized) return;
+
+    setStlLoading(true);
+    setLoadProgress(0);
+
+    // Clear existing meshes
+    const group = meshGroupRef.current;
+    while (group.children.length > 0) {
+      const child = group.children[0];
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) {
+          child.material.dispose();
+        }
+      }
+      group.remove(child);
+    }
+
+    const loader = new STLLoader();
+    const regions = stlManifest.regions;
+    const totalRegions = regions.length;
+    let loadedCount = 0;
+
+    // Map manifest region names to our internal names
+    const nameMap: { [key: string]: string } = {
+      'brain': 'brain',
+      'NCR': 'NCR',
+      'ED': 'ED',
+      'ET': 'ET',
+    };
+
+    // Map visibility
+    const visibilityMap: { [key: string]: boolean } = {
+      'brain': showBrain,
+      'NCR': showNCR,
+      'ED': showED,
+      'ET': showET,
+    };
+
+    regions.forEach((region) => {
+      const stlPath = stlBaseUrl ? `${stlBaseUrl}/${region.file}` : region.file;
+      
+      loader.load(
+        stlPath,
+        (geometry) => {
+          // Compute normals for proper lighting
+          geometry.computeVertexNormals();
+
+          // Center the geometry
+          geometry.computeBoundingBox();
+          const center = new THREE.Vector3();
+          geometry.boundingBox?.getCenter(center);
+          geometry.translate(-center.x, -center.y, -center.z);
+
+          // Parse color from hex string
+          const color = new THREE.Color(region.color);
+          
+          // Create material
+          const material = new THREE.MeshPhongMaterial({
+            color: color,
+            transparent: region.opacity < 1,
+            opacity: region.opacity,
+            side: THREE.DoubleSide,
+            flatShading: false,
+            shininess: 30,
+            depthWrite: region.opacity >= 0.5,
+          });
+
+          const mesh = new THREE.Mesh(geometry, material);
+          const internalName = nameMap[region.name] || region.name;
+          mesh.name = internalName;
+          mesh.visible = visibilityMap[internalName] ?? true;
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+
+          group.add(mesh);
+          loadedCount++;
+          setLoadProgress(Math.round((loadedCount / totalRegions) * 100));
+
+          // When all regions are loaded, fit camera
+          if (loadedCount === totalRegions) {
+            if (cameraRef.current && controlsRef.current && group.children.length > 0) {
+              const box = new THREE.Box3().setFromObject(group);
+              const size = box.getSize(new THREE.Vector3());
+              const maxDim = Math.max(size.x, size.y, size.z);
+              const camera = cameraRef.current;
+              const controls = controlsRef.current;
+              
+              camera.position.set(0, 0, maxDim * 2.5);
+              controls.target.set(0, 0, 0);
+              controls.update();
+            }
+            setStlLoading(false);
+          }
+        },
+        (progress) => {
+          console.log(`Loading STL ${region.name}: ${(progress.loaded / (progress.total || 1) * 100).toFixed(1)}%`);
+        },
+        (error) => {
+          console.error(`Error loading STL ${region.name}:`, error);
+          loadedCount++;
+          if (loadedCount === totalRegions) {
+            setStlLoading(false);
+          }
+        }
+      );
+    });
+  }, [stlManifest, stlBaseUrl, isInitialized, showBrain, showNCR, showED, showET]);
+
+  const isLoading = loading || glbLoading || stlLoading;
 
   return (
     <Box
@@ -444,14 +596,14 @@ const BrainViewer: React.FC<BrainViewerProps> = ({
             zIndex: 10,
           }}
         >
-          <CircularProgress size={60} />
+          <CircularProgress size={60} variant={stlLoading && loadProgress > 0 ? "determinate" : "indeterminate"} value={loadProgress} />
           <Typography sx={{ mt: 2, color: 'white' }}>
-            Loading 3D model...
+            {stlLoading ? `Loading STL regions... ${loadProgress}%` : 'Loading 3D model...'}
           </Typography>
         </Box>
       )}
 
-      {!isLoading && !meshData && !glbUrl && (
+      {!isLoading && !meshData && !glbUrl && !stlManifest && (
         <Box
           sx={{
             position: 'absolute',

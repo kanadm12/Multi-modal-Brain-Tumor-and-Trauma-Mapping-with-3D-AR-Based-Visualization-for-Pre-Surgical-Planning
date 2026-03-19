@@ -1,0 +1,56 @@
+{
+  "patient_id": "BraTS-GLI-00005-100",
+  "timestamp": "2026-03-19T08:58:23.721094",
+  "regions": {
+    "brain": {
+      "file": "BraTS-GLI-00005-100_brain.stl",
+      "path": "/workspace/visualization/BraTS-GLI-00005-100/stl/BraTS-GLI-00005-100_brain.stl",
+      "color": "#E5E5F2",
+      "opacity": 0.15,
+      "label": "Brain Surface"
+    },
+    "ED": {
+      "file": "BraTS-GLI-00005-100_ED.stl",
+      "path": "/workspace/visualization/BraTS-GLI-00005-100/stl/BraTS-GLI-00005-100_ED.stl",
+      "color": "#FFD700",
+      "opacity": 0.6,
+      "label": "Peritumoral Edema"
+    },
+    "ET": {
+      "file": "BraTS-GLI-00005-100_ET.stl",
+      "path": "/workspace/visualization/BraTS-GLI-00005-100/stl/BraTS-GLI-00005-100_ET.stl",
+      "color": "#FF0000",
+      "opacity": 1.0,
+      "label": "Enhancing Tumor"
+    }
+  },
+  "stats": {
+    "ED": {
+      "class_id": 2,
+      "label": "Peritumoral Edema",
+      "description": "Swelling around tumor",
+      "volume_voxels": 24602,
+      "volume_cm3": 24.602,
+      "centroid_mm": [
+        96.9,
+        48.3,
+        112.3
+      ],
+      "color": "#FFD700"
+    },
+    "ET": {
+      "class_id": 3,
+      "label": "Enhancing Tumor",
+      "description": "Active tumor with contrast enhancement",
+      "volume_voxels": 3927,
+      "volume_cm3": 3.927,
+      "centroid_mm": [
+        105.8,
+        43.6,
+        117.2
+      ],
+      "color": "#FF0000"
+    }
+  },
+  "total_tumor_volume_cm3": 28.529
+}
