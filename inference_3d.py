@@ -508,16 +508,171 @@ def adaptive_postprocessing(prediction, min_size=100):
 
 
 # ============================================================================
-# 3D MESH GENERATION
+# 3D MESH GENERATION WITH SMOOTH SURFACES
 # ============================================================================
 
-class MeshGenerator:
-    """Generate 3D meshes from segmentation"""
+def taubin_smooth(vertices, faces, iterations=30, lambda_factor=0.5, mu_factor=-0.53):
+    """Taubin smoothing - smooths mesh without shrinkage
     
-    def __init__(self, smoothing_sigma=1.0, step_size=2, decimate_ratio=0.3):
+    Unlike Laplacian smoothing which shrinks the mesh, Taubin smoothing
+    alternates between positive and negative smoothing factors to preserve volume.
+    
+    Args:
+        vertices: Nx3 array of vertex positions
+        faces: Mx3 array of face indices
+        iterations: Number of smoothing iterations (more = smoother)
+        lambda_factor: Positive smoothing factor (0.5 typical)
+        mu_factor: Negative smoothing factor (should be < -lambda for no shrinkage)
+    
+    Returns:
+        Smoothed vertices array
+    """
+    vertices = np.array(vertices, dtype=np.float64)
+    faces = np.array(faces, dtype=np.int32)
+    n_vertices = len(vertices)
+    
+    # Build adjacency list (which vertices are connected to which)
+    adjacency = [set() for _ in range(n_vertices)]
+    for face in faces:
+        for i in range(3):
+            v1, v2 = face[i], face[(i + 1) % 3]
+            adjacency[v1].add(v2)
+            adjacency[v2].add(v1)
+    
+    # Convert to list of lists for faster iteration
+    adjacency = [list(adj) for adj in adjacency]
+    
+    for iteration in range(iterations):
+        # Alternate between lambda (smoothing) and mu (inflation)
+        factor = lambda_factor if iteration % 2 == 0 else mu_factor
+        
+        new_vertices = np.zeros_like(vertices)
+        
+        for i in range(n_vertices):
+            neighbors = adjacency[i]
+            if len(neighbors) == 0:
+                new_vertices[i] = vertices[i]
+                continue
+            
+            # Compute Laplacian: average of neighbors minus current vertex
+            neighbor_avg = np.mean(vertices[neighbors], axis=0)
+            laplacian = neighbor_avg - vertices[i]
+            
+            # Apply smoothing
+            new_vertices[i] = vertices[i] + factor * laplacian
+        
+        vertices = new_vertices
+    
+    return vertices
+
+
+def laplacian_smooth(vertices, faces, iterations=10, lambda_factor=0.5):
+    """Standard Laplacian smoothing (simpler but causes shrinkage)
+    
+    Args:
+        vertices: Nx3 array of vertex positions  
+        faces: Mx3 array of face indices
+        iterations: Number of smoothing passes
+        lambda_factor: Smoothing strength (0-1)
+    
+    Returns:
+        Smoothed vertices array
+    """
+    vertices = np.array(vertices, dtype=np.float64)
+    faces = np.array(faces, dtype=np.int32)
+    n_vertices = len(vertices)
+    
+    # Build adjacency
+    adjacency = [set() for _ in range(n_vertices)]
+    for face in faces:
+        for i in range(3):
+            v1, v2 = face[i], face[(i + 1) % 3]
+            adjacency[v1].add(v2)
+            adjacency[v2].add(v1)
+    
+    adjacency = [list(adj) for adj in adjacency]
+    
+    for _ in range(iterations):
+        new_vertices = np.zeros_like(vertices)
+        
+        for i in range(n_vertices):
+            neighbors = adjacency[i]
+            if len(neighbors) == 0:
+                new_vertices[i] = vertices[i]
+                continue
+            
+            neighbor_avg = np.mean(vertices[neighbors], axis=0)
+            new_vertices[i] = vertices[i] + lambda_factor * (neighbor_avg - vertices[i])
+        
+        vertices = new_vertices
+    
+    return vertices
+
+
+def compute_vertex_normals(vertices, faces):
+    """Compute smooth vertex normals by averaging adjacent face normals
+    
+    This creates smooth shading when rendering the mesh.
+    """
+    vertices = np.array(vertices)
+    faces = np.array(faces)
+    
+    # Initialize vertex normals
+    vertex_normals = np.zeros_like(vertices)
+    
+    # Compute face normals and accumulate to vertices
+    for face in faces:
+        v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+        
+        # Face normal (cross product)
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        face_normal = np.cross(edge1, edge2)
+        
+        # Normalize
+        norm = np.linalg.norm(face_normal)
+        if norm > 1e-10:
+            face_normal = face_normal / norm
+        
+        # Add to each vertex of this face
+        vertex_normals[face[0]] += face_normal
+        vertex_normals[face[1]] += face_normal
+        vertex_normals[face[2]] += face_normal
+    
+    # Normalize vertex normals
+    norms = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
+    norms[norms < 1e-10] = 1.0
+    vertex_normals = vertex_normals / norms
+    
+    return vertex_normals
+
+
+class MeshGenerator:
+    """Generate smooth 3D meshes from segmentation
+    
+    Pipeline for smooth surfaces:
+    1. Gaussian blur the binary mask (volume smoothing)
+    2. Marching cubes at finer step size
+    3. Taubin smoothing (mesh smoothing without shrinkage)
+    4. Optional decimation (preserve quality)
+    5. Compute smooth vertex normals
+    """
+    
+    def __init__(self, smoothing_sigma=2.0, step_size=1, decimate_ratio=0.5,
+                 mesh_smoothing_iterations=30, use_taubin=True):
+        """
+        Args:
+            smoothing_sigma: Gaussian blur sigma for volume (higher = smoother, 2.0 recommended)
+            step_size: Marching cubes step (1 = finest, 2 = coarser but faster)
+            decimate_ratio: Keep this fraction of faces (0.5 = keep 50%)
+            mesh_smoothing_iterations: Taubin/Laplacian iterations (30 = very smooth)
+            use_taubin: True for Taubin (no shrinkage), False for Laplacian
+        """
         self.smoothing_sigma = smoothing_sigma
         self.step_size = step_size
         self.decimate_ratio = decimate_ratio
+        self.mesh_smoothing_iterations = mesh_smoothing_iterations
+        self.use_taubin = use_taubin
         
         if not SKIMAGE_AVAILABLE:
             raise ImportError("scikit-image required: pip install scikit-image")
@@ -575,21 +730,31 @@ class MeshGenerator:
         return result
     
     def _extract_brain_surface(self, brain_data, spacing):
-        """Extract brain surface mesh"""
+        """Extract smooth brain surface mesh"""
         try:
             threshold = np.percentile(brain_data[brain_data > 0], 15) if np.any(brain_data > 0) else 0
             brain_mask = (brain_data > threshold).astype(np.float32)
-            brain_mask = gaussian_filter(brain_mask, sigma=2.0)
+            
+            # Higher sigma for smoother brain surface
+            brain_mask = gaussian_filter(brain_mask, sigma=3.0)
             
             verts, faces, normals, _ = measure.marching_cubes(
-                brain_mask, level=0.5, spacing=spacing, step_size=4
+                brain_mask, level=0.5, spacing=spacing, step_size=2
             )
             
-            verts, faces = self._decimate_mesh(verts, faces, 0.15)
+            # Apply Taubin smoothing to brain surface too
+            if len(verts) > 100:
+                verts = taubin_smooth(verts, faces, iterations=20, lambda_factor=0.5, mu_factor=-0.53)
+            
+            verts, faces = self._decimate_mesh(verts, faces, 0.2)
+            
+            # Compute smooth normals
+            normals = compute_vertex_normals(verts, faces)
             
             return {
                 "vertices": verts.tolist(),
                 "faces": faces.tolist(),
+                "normals": normals.tolist(),
                 "color": BRAIN_COLOR["color"],
                 "hex": BRAIN_COLOR["hex"],
                 "opacity": 0.12,
@@ -600,19 +765,58 @@ class MeshGenerator:
         except Exception as e:
             logger.warning(f"Brain surface extraction failed: {e}")
             return None
+        except Exception as e:
+            logger.warning(f"Brain surface extraction failed: {e}")
+            return None
     
     def _extract_surface(self, mask, spacing, color):
-        """Extract surface mesh from binary mask"""
+        """Extract smooth surface mesh from binary mask
+        
+        Pipeline:
+        1. Gaussian blur the volume (sigma=2.0)
+        2. Marching cubes to extract surface
+        3. Taubin smoothing to smooth mesh without shrinkage
+        4. Optional decimation
+        5. Compute smooth vertex normals
+        """
         try:
+            # Step 1: Volume smoothing (Gaussian blur on the mask)
             smoothed = gaussian_filter(mask, sigma=self.smoothing_sigma)
+            
+            # Step 2: Marching cubes surface extraction
             verts, faces, normals, _ = measure.marching_cubes(
                 smoothed, level=0.5, spacing=spacing, step_size=self.step_size
             )
+            
+            # Step 3: Mesh smoothing (Taubin or Laplacian)
+            if self.mesh_smoothing_iterations > 0 and len(verts) > 50:
+                logger.info(f"Applying {'Taubin' if self.use_taubin else 'Laplacian'} smoothing "
+                           f"({self.mesh_smoothing_iterations} iterations)...")
+                
+                if self.use_taubin:
+                    verts = taubin_smooth(
+                        verts, faces,
+                        iterations=self.mesh_smoothing_iterations,
+                        lambda_factor=0.5,
+                        mu_factor=-0.53
+                    )
+                else:
+                    verts = laplacian_smooth(
+                        verts, faces,
+                        iterations=self.mesh_smoothing_iterations,
+                        lambda_factor=0.5
+                    )
+            
+            # Step 4: Decimation (reduce triangle count)
             verts, faces = self._decimate_mesh(verts, faces, self.decimate_ratio)
+            
+            # Step 5: Compute smooth vertex normals
+            normals = compute_vertex_normals(verts, faces)
             
             return {
                 "vertices": verts.tolist(),
                 "faces": faces.tolist(),
+                "normals": normals.tolist(),
                 "color": color,
                 "opacity": color[3],
                 "vertex_count": len(verts),
@@ -623,34 +827,51 @@ class MeshGenerator:
             return None
     
     def _decimate_mesh(self, vertices, faces, ratio):
-        """Simple mesh decimation"""
+        """Improved mesh decimation with edge-length based selection
+        
+        This preserves important geometric features better than uniform sampling.
+        """
         if ratio >= 1.0 or len(vertices) < 100:
             return vertices, faces
         
-        keep_every = max(1, int(1.0 / ratio))
-        old_to_new = {}
-        new_vertices = []
+        vertices = np.array(vertices)
+        faces = np.array(faces)
         
-        for i in range(0, len(vertices), keep_every):
-            old_to_new[i] = len(new_vertices)
-            new_vertices.append(vertices[i])
+        target_faces = max(50, int(len(faces) * ratio))
         
-        new_faces = []
-        for face in faces:
-            new_face = []
-            valid = True
-            for idx in face:
-                nearest = (idx // keep_every) * keep_every
-                if nearest >= len(vertices):
-                    nearest = len(vertices) - 1
-                if nearest not in old_to_new:
-                    valid = False
-                    break
-                new_face.append(old_to_new[nearest])
-            if valid and len(set(new_face)) == 3:
-                new_faces.append(new_face)
+        if len(faces) <= target_faces:
+            return vertices, faces
         
-        return np.array(new_vertices), np.array(new_faces)
+        # Compute face areas (smaller faces are less important)
+        face_areas = np.zeros(len(faces))
+        for i, face in enumerate(faces):
+            v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            face_areas[i] = 0.5 * np.linalg.norm(np.cross(edge1, edge2))
+        
+        # Keep faces with larger areas (more visually important)
+        sorted_indices = np.argsort(-face_areas)  # Descending order
+        keep_indices = sorted_indices[:target_faces]
+        
+        # Get kept faces
+        kept_faces = faces[keep_indices]
+        
+        # Find unique vertices referenced by kept faces
+        unique_verts = np.unique(kept_faces.flatten())
+        
+        # Create mapping from old to new vertex indices
+        old_to_new = {old: new for new, old in enumerate(unique_verts)}
+        
+        # Create new vertex array
+        new_vertices = vertices[unique_verts]
+        
+        # Remap face indices
+        new_faces = np.zeros_like(kept_faces)
+        for i, face in enumerate(kept_faces):
+            new_faces[i] = [old_to_new[idx] for idx in face]
+        
+        return new_vertices, new_faces
 
 
 # ============================================================================
