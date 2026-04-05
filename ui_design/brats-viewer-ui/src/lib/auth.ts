@@ -6,15 +6,15 @@ import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcryptjs';
 import { NextRequest } from 'next/server';
 
-// Require JWT_SECRET in production
-const JWT_SECRET_STRING = process.env.JWT_SECRET;
-if (!JWT_SECRET_STRING && process.env.NODE_ENV === 'production') {
-  throw new Error('JWT_SECRET environment variable is required in production');
+// Get JWT secret - check at runtime, not build time
+function getJWTSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET environment variable is required in production');
+  }
+  return new TextEncoder().encode(secret || 'dev-only-secret-change-in-production');
 }
 
-const JWT_SECRET = new TextEncoder().encode(
-  JWT_SECRET_STRING || 'dev-only-secret-change-in-production'
-);
 const JWT_EXPIRES_IN = '7d';
 
 export interface JWTPayload {
@@ -46,7 +46,7 @@ export async function generateToken(payload: { userId: string; email: string }):
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(JWT_EXPIRES_IN)
-    .sign(JWT_SECRET);
+    .sign(getJWTSecret());
 }
 
 /**
@@ -54,7 +54,7 @@ export async function generateToken(payload: { userId: string; email: string }):
  */
 export async function verifyToken(token: string): Promise<JWTPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, JWT_SECRET);
+    const { payload } = await jwtVerify(token, getJWTSecret());
     return payload as unknown as JWTPayload;
   } catch {
     return null;

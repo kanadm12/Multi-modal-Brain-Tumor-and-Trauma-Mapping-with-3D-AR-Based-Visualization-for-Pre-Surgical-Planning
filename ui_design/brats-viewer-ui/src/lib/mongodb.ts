@@ -4,18 +4,17 @@
 
 import { MongoClient, Db } from 'mongodb';
 
-const MONGODB_URL = process.env.MONGODB_URL;
-const DB_NAME = process.env.MONGODB_DB_NAME || 'brats_db';
-
-if (!MONGODB_URL) {
-  console.error('❌ MONGODB_URL environment variable is not set!');
-}
+// Get env vars at runtime, not build time
+const getMongoUrl = () => process.env.MONGODB_URL;
+const getDbName = () => process.env.MONGODB_DB_NAME || 'brats_db';
 
 // Global cache for MongoDB client (for serverless functions)
 let cachedClient: MongoClient | null = null;
 let cachedDb: Db | null = null;
 
 export async function connectToDatabase(): Promise<{ client: MongoClient; db: Db }> {
+  const MONGODB_URL = getMongoUrl();
+  
   if (!MONGODB_URL) {
     throw new Error('MONGODB_URL environment variable is not configured. Please add it to your Vercel project settings.');
   }
@@ -29,7 +28,7 @@ export async function connectToDatabase(): Promise<{ client: MongoClient; db: Db
     // Create new connection
     const client = new MongoClient(MONGODB_URL);
     await client.connect();
-    const db = client.db(DB_NAME);
+    const db = client.db(getDbName());
 
     // Cache the connection
     cachedClient = client;
