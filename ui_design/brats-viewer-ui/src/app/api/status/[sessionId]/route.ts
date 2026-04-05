@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const RUNPOD_ENDPOINT_ID = process.env.NEXT_PUBLIC_RUNPOD_ENDPOINT_ID || '';
-const RUNPOD_API_KEY = process.env.NEXT_PUBLIC_RUNPOD_API_KEY || '';
+// Use server-side env vars (fallback to NEXT_PUBLIC for backwards compatibility)
+const RUNPOD_ENDPOINT_ID = process.env.RUNPOD_ENDPOINT_ID || process.env.NEXT_PUBLIC_RUNPOD_ENDPOINT_ID || '';
+const RUNPOD_API_KEY = process.env.RUNPOD_API_KEY || process.env.NEXT_PUBLIC_RUNPOD_API_KEY || '';
 const RUNPOD_BASE_URL = RUNPOD_ENDPOINT_ID 
   ? `https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}`
   : '';
