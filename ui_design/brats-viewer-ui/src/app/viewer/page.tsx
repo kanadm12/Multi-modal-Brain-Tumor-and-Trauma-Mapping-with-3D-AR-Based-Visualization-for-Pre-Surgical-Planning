@@ -20,6 +20,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { apiService, MeshResponse, ReportResponse } from '@/services/api';
+import { STLManifest } from '@/components/BrainViewer';
 
 // Dynamically import BrainViewer to avoid SSR issues with Three.js
 const BrainViewer = dynamic(() => import('@/components/BrainViewer'), { 
@@ -92,6 +93,7 @@ function ViewerContent() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [glbUrl, setGlbUrl] = useState<string | null>(null);
+    const [stlManifest, setStlManifest] = useState<STLManifest | null>(null);
 
     // Display controls
     const [showBrain, setShowBrain] = useState(true);
@@ -121,10 +123,31 @@ function ViewerContent() {
         }
     };
 
-    const loadDemoData = () => {
-        // Load demo GLB file and report
-        setGlbUrl('/demo_brain_tumor.glb');
-        setReport(DEMO_REPORT);
+    const loadDemoData = async () => {
+        setLoading(true);
+        try {
+            // Load STL manifest
+            const response = await fetch('/demo_manifest.json');
+            const manifest: STLManifest = await response.json();
+            setStlManifest(manifest);
+            
+            // Create report from manifest stats
+            const demoReport = {
+                ...DEMO_REPORT,
+                tumor_analysis: {
+                    ...DEMO_REPORT.tumor_analysis,
+                    whole_tumor_volume_cm3: manifest.total_tumor_volume_cm3 || 28.5,
+                    tumor_core_volume_cm3: manifest.stats?.ET?.volume_cm3 || 3.9,
+                    enhancing_tumor_volume_cm3: manifest.stats?.ET?.volume_cm3 || 3.9,
+                }
+            };
+            setReport(demoReport);
+        } catch (err) {
+            console.error('Failed to load demo data:', err);
+            // Fallback to GLB if manifest fails
+            setGlbUrl('/demo_brain_tumor.glb');
+            setReport(DEMO_REPORT);
+        }
         
         // Try to get patient info from localStorage
         const patientInfo = localStorage.getItem('patientInfo');
@@ -178,23 +201,128 @@ function ViewerContent() {
     };
 
     const handleDownloadPDF = async () => {
-        const sid = sessionId || localStorage.getItem('currentSessionId');
-        if (!sid) return;
+        if (!report) return;
 
-        try {
-            const blob = await apiService.downloadReportPDF(sid);
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `brain_tumor_report_${sid}.pdf`;
-            a.click();
-            URL.revokeObjectURL(url);
-        } catch (err) {
-            console.error('Failed to download PDF:', err);
-        }
+        // Generate HTML report
+        const patientName = report.patient_info?.name || report.patient?.name || 'Unknown';
+        const patientAge = report.patient_info?.age || report.patient?.age || 'N/A';
+        
+        const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Brain Tumor Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }
+        h1 { color: #314EE6; border-bottom: 2px solid #314EE6; padding-bottom: 10px; }
+        h2 { color: #333; margin-top: 30px; }
+        .section { margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 8px; }
+        .stat { display: inline-block; margin: 10px 20px 10px 0; padding: 10px 15px; background: #314EE6; color: white; border-radius: 5px; }
+        .finding { padding: 8px 0; border-bottom: 1px solid #ddd; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+        .header-info { display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .warning { background: #fff3cd; padding: 15px; border-radius: 8px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🧠 Brain Tumor Analysis Report</h1>
+    
+    <div class="header-info">
+        <div>
+            <strong>Patient:</strong> ${patientName}<br>
+            <strong>Age:</strong> ${patientAge}
+        </div>
+        <div>
+            <strong>Report Date:</strong> ${new Date().toLocaleDateString()}<br>
+            <strong>Report ID:</strong> ${report.report_id || 'DEMO-001'}
+        </div>
+    </div>
+
+    <h2>Tumor Analysis Summary</h2>
+    <div class="section">
+        <div class="stat">Whole Tumor: ${report.tumor_analysis.whole_tumor_volume_cm3?.toFixed(2) || 'N/A'} cm³</div>
+        <div class="stat">Tumor Core: ${report.tumor_analysis.tumor_core_volume_cm3?.toFixed(2) || 'N/A'} cm³</div>
+        <div class="stat">Enhancing: ${report.tumor_analysis.enhancing_tumor_volume_cm3?.toFixed(2) || 'N/A'} cm³</div>
+    </div>
+
+    <h2>Location</h2>
+    <div class="section">
+        <strong>Region:</strong> ${report.tumor_analysis.estimated_location?.region || 'N/A'}<br>
+        <strong>Hemisphere:</strong> ${report.tumor_analysis.estimated_location?.hemisphere || 'N/A'}
+    </div>
+
+    <h2>Grade Assessment</h2>
+    <div class="section">
+        <strong>Grade:</strong> ${report.tumor_analysis.estimated_grade?.grade || 'N/A'}<br>
+        <strong>Confidence:</strong> ${report.tumor_analysis.estimated_grade?.confidence || 'N/A'}<br>
+        <p>${report.tumor_analysis.estimated_grade?.description || ''}</p>
+    </div>
+
+    <h2>Clinical Findings</h2>
+    <div class="section">
+        ${report.clinical_findings?.map(f => `<div class="finding">• ${f}</div>`).join('') || '<p>No findings available</p>'}
+    </div>
+
+    <h2>Recommendations</h2>
+    <div class="section">
+        ${report.recommendations?.map(r => `<div class="finding">• ${r}</div>`).join('') || '<p>No recommendations available</p>'}
+    </div>
+
+    <div class="warning">
+        <strong>⚠️ Disclaimer:</strong> ${report.disclaimer || 'This report is generated by an AI system and should be reviewed by a qualified medical professional before making any clinical decisions.'}
+    </div>
+
+    <div class="footer">
+        Generated by BraTS Brain Tumor Analysis System<br>
+        ${new Date().toLocaleString()}
+    </div>
+</body>
+</html>`;
+
+        // Create a blob and download
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `brain_tumor_report_${report.report_id || 'demo'}.html`;
+        a.click();
+        URL.revokeObjectURL(url);
     };
 
     const handleDownloadGLTF = async () => {
+        // If we have STL manifest, download the STL files
+        if (stlManifest) {
+            // Download each STL file
+            for (const region of stlManifest.regions) {
+                const response = await fetch(`/${region.file}`);
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = region.file;
+                a.click();
+                URL.revokeObjectURL(url);
+                // Small delay between downloads
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            return;
+        }
+
+        // If we have GLB URL, download it directly
+        if (glbUrl) {
+            const response = await fetch(glbUrl);
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'brain_model.glb';
+            a.click();
+            URL.revokeObjectURL(url);
+            return;
+        }
+
+        // Fall back to API download
         const sid = sessionId || localStorage.getItem('currentSessionId');
         if (!sid) return;
 
@@ -207,7 +335,7 @@ function ViewerContent() {
             a.click();
             URL.revokeObjectURL(url);
         } catch (err) {
-            console.error('Failed to download GLTF:', err);
+            console.error('Failed to download 3D model:', err);
         }
     };
 
@@ -240,6 +368,8 @@ function ViewerContent() {
                             <BrainViewer 
                                 meshData={meshData}
                                 glbUrl={glbUrl}
+                                stlManifest={stlManifest}
+                                stlBaseUrl=""
                                 loading={loading}
                                 showBrain={showBrain}
                                 showNCR={showNCR}
@@ -380,17 +510,17 @@ function ViewerContent() {
                                 fullWidth
                                 size="small"
                             >
-                                Download Report (PDF)
+                                Download Report
                             </Button>
                             <Button 
                                 variant="outlined" 
                                 startIcon={<ViewInArIcon />}
                                 onClick={handleDownloadGLTF}
-                                disabled={!meshData}
+                                disabled={!meshData && !stlManifest && !glbUrl}
                                 fullWidth
                                 size="small"
                             >
-                                Download 3D Model (GLTF)
+                                Download 3D Model
                             </Button>
                         </Box>
 
