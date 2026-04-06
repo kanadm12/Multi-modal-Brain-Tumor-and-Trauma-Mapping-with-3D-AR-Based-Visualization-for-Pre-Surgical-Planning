@@ -1,6 +1,7 @@
 // src/app/layout.tsx
 "use client";
 
+import './globals.css';
 import React, { useState, useEffect } from 'react';
 import { AppBar, Box, Toolbar, Button, Typography } from '@mui/material';
 import { ThemeProvider } from '@mui/material/styles';
